@@ -16,7 +16,9 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include "minunit.h"
 #include "score_system.h"
+#include "sequence.h"
 
 struct scoringSystem *
 getMatrixUsingGapPenalties(char *matrixName, int gapopen_over, int gapextn_over)
@@ -28,7 +30,10 @@ getMatrixUsingGapPenalties(char *matrixName, int gapopen_over, int gapextn_over)
 }
 
 
-// TODO: This needs testing
+//
+// Calculate the substitition matrix lambda value
+//
+//
 double
 calculateLambda( struct scoringSystem *scoringSys )
 {
@@ -39,8 +44,10 @@ calculateLambda( struct scoringSystem *scoringSys )
   double check = 0;
   double sum = 0;
 
-  do {
+  for (;;) {
+    sum = 0;
     check = 0;
+    // Assumes base encoding of ACGT to be 0-3
     for ( i = 0; i < 4; i++ ){
       for ( j = 0; j < 4; j++ ){
         sum += scoringSys->m_bg_freqs[i] * scoringSys->m_bg_freqs[j] *
@@ -51,16 +58,15 @@ calculateLambda( struct scoringSystem *scoringSys )
     if ( check > (double)1.001 || check < (double)0.999 ) {
       return ( (double)-1.0 );
     }
-    if ( sum < 1.0 ) {
-      lambda_lower = lambda;
-      lambda *= (double)2.0;
-    }
-  }while( sum < (double)1.0 );
-
+    if ( sum >= (double)1.0 ) break;
+    lambda_lower = lambda;
+    lambda *= (double)2.0;
+  }
   lambda_upper = lambda;
 
   while( lambda_upper - lambda_lower > (double)0.00001 ) {
     lambda = ( lambda_lower + lambda_upper ) / (double) 2.0;
+
     sum = 0;
     check = 0;
     for ( i = 0; i < 4; i++ ) {
@@ -85,24 +91,10 @@ calculateLambda( struct scoringSystem *scoringSys )
 struct scoringSystem *
 getRepeatScoutMatrix(int match, int mismatch, int gap)
 {
-  // Convenience table -- could be optimised
-  static int alpha_convert[256];
-  static char alphabet[] = "ACGT";
-  static char lc_alphabet[] = "acgt";
-  static int alphsize = 4;
   int i;
-  for (i = 0; i < 256; i++)
-    alpha_convert[i] = -1;
+  int j;
 
-  for (i = 0; i < alphsize; i++)
-  {
-    alpha_convert[(int) alphabet[i]] = i;
-    alpha_convert[(int) lc_alphabet[i]] = i;
-  }
-
-  alpha_convert['N'] = 99;
-  alpha_convert['n'] = 99;
-
+  // Currently set to support 0-99 because 'N' is hardcoded as 99.
   int **matrix = (int **)malloc(100*sizeof(int*));
   if ( matrix == NULL )
   {
@@ -125,41 +117,56 @@ getRepeatScoutMatrix(int match, int mismatch, int gap)
   dMat->alphabet = "ACGTN";
   dMat->gapopen = 0;
   dMat->gapextn = gap;
-    matrix[alpha_convert['A']][alpha_convert['A']] = match;
-    matrix[alpha_convert['A']][alpha_convert['C']] = mismatch;
-    matrix[alpha_convert['A']][alpha_convert['G']] = mismatch;
-    matrix[alpha_convert['A']][alpha_convert['T']] = mismatch;
-    matrix[alpha_convert['A']][alpha_convert['N']] = mismatch;
+  matrix[SYM_A][SYM_A] = match;
+  matrix[SYM_A][SYM_C] = mismatch;
+  matrix[SYM_A][SYM_G] = mismatch;
+  matrix[SYM_A][SYM_T] = mismatch;
+  matrix[SYM_A][SYM_N] = mismatch;
 
-    matrix[alpha_convert['G']][alpha_convert['A']] = mismatch;
-    matrix[alpha_convert['G']][alpha_convert['C']] = mismatch;
-    matrix[alpha_convert['G']][alpha_convert['G']] = match;
-    matrix[alpha_convert['G']][alpha_convert['T']] = mismatch;
-    matrix[alpha_convert['G']][alpha_convert['N']] = mismatch;
+  matrix[SYM_G][SYM_A] = mismatch;
+  matrix[SYM_G][SYM_C] = mismatch;
+  matrix[SYM_G][SYM_G] = match;
+  matrix[SYM_G][SYM_T] = mismatch;
+  matrix[SYM_G][SYM_N] = mismatch;
 
-    matrix[alpha_convert['C']][alpha_convert['A']] = mismatch;
-    matrix[alpha_convert['C']][alpha_convert['C']] = match;
-    matrix[alpha_convert['C']][alpha_convert['G']] = mismatch;
-    matrix[alpha_convert['C']][alpha_convert['T']] = mismatch;
-    matrix[alpha_convert['C']][alpha_convert['N']] = mismatch;
+  matrix[SYM_C][SYM_A] = mismatch;
+  matrix[SYM_C][SYM_C] = match;
+  matrix[SYM_C][SYM_G] = mismatch;
+  matrix[SYM_C][SYM_T] = mismatch;
+  matrix[SYM_C][SYM_N] = mismatch;
 
-    matrix[alpha_convert['T']][alpha_convert['A']] = mismatch;
-    matrix[alpha_convert['T']][alpha_convert['C']] = mismatch;
-    matrix[alpha_convert['T']][alpha_convert['G']] = mismatch;
-    matrix[alpha_convert['T']][alpha_convert['T']] = match;
-    matrix[alpha_convert['T']][alpha_convert['N']] = mismatch;
+  matrix[SYM_T][SYM_A] = mismatch;
+  matrix[SYM_T][SYM_C] = mismatch;
+  matrix[SYM_T][SYM_G] = mismatch;
+  matrix[SYM_T][SYM_T] = match;
+  matrix[SYM_T][SYM_N] = mismatch;
 
-    matrix[alpha_convert['N']][alpha_convert['A']] = mismatch;
-    matrix[alpha_convert['N']][alpha_convert['C']] = mismatch;
-    matrix[alpha_convert['N']][alpha_convert['G']] = mismatch;
-    matrix[alpha_convert['N']][alpha_convert['T']] = mismatch;
-    matrix[alpha_convert['N']][alpha_convert['N']] = mismatch;
+  matrix[SYM_N][SYM_A] = mismatch;
+  matrix[SYM_N][SYM_C] = mismatch;
+  matrix[SYM_N][SYM_G] = mismatch;
+  matrix[SYM_N][SYM_T] = mismatch;
+  matrix[SYM_N][SYM_N] = mismatch;
 
-    dMat->m_bg_freqs[0] = 0.25;
-    dMat->m_bg_freqs[1] = 0.25;
-    dMat->m_bg_freqs[2] = 0.25;
-    dMat->m_bg_freqs[3] = 0.25;
-    dMat->m_lambda = calculateLambda(dMat);
+  // Penalize matches from/to a->t (masked) the same as to/from an N
+  //   - Assumes ordering from A->T and a->t
+  for( i = SYM_a; i <= SYM_t; i++ ) {
+    for( j = SYM_a; j <= SYM_t; j++ ) {
+      matrix[i][j] = -1;
+      matrix[j][i] = -1;
+    }
+    for( j = SYM_A; j <= SYM_T; j++ ) {
+      matrix[i][j] = mismatch;
+      matrix[j][i] = mismatch;
+    }
+    matrix[i][SYM_N] = mismatch;
+    matrix[SYM_N][i] = mismatch;
+  }
+
+  dMat->m_bg_freqs[0] = 0.25;
+  dMat->m_bg_freqs[1] = 0.25;
+  dMat->m_bg_freqs[2] = 0.25;
+  dMat->m_bg_freqs[3] = 0.25;
+  dMat->m_lambda = calculateLambda(dMat);
 
   return ( dMat );
 }
@@ -175,26 +182,7 @@ void freeScoringSystem(struct scoringSystem *score){
 struct scoringSystem *
 getMatrix(char *matrixName)
 {
-  // Convenience table -- could be optimised
-  // making the following static causes segfault
-  // in a multi-threaded context...why?
-  //static int alpha_convert[256];
-  int alpha_convert[256];
-  static char alphabet[] = "ACGT";
-  static char lc_alphabet[] = "acgt";
-  static int alphsize = 4;
-  int i;
-  for (i = 0; i < 256; i++)
-    alpha_convert[i] = -1;
-
-  for (i = 0; i < alphsize; i++)
-  {
-    alpha_convert[(int) alphabet[i]] = i;
-    alpha_convert[(int) lc_alphabet[i]] = i;
-  }
-
-  alpha_convert['N'] = 99;
-  alpha_convert['n'] = 99;
+  int i,j;
 
   int **matrix = (int **)malloc(100*sizeof(int*));
   if ( matrix == NULL )
@@ -223,35 +211,35 @@ getMatrix(char *matrixName)
     dMat->gapextn = -7;
     // 14p43g non-symmetric matrix
     // matrix[consensus_base][sequence_base]
-    matrix[alpha_convert['A']][alpha_convert['A']] = 9;
-    matrix[alpha_convert['A']][alpha_convert['C']] = -18;
-    matrix[alpha_convert['A']][alpha_convert['G']] = -10;
-    matrix[alpha_convert['A']][alpha_convert['T']] = -21;
-    matrix[alpha_convert['A']][alpha_convert['N']] = -1;
+    matrix[SYM_A][SYM_A] = 9;
+    matrix[SYM_A][SYM_C] = -18;
+    matrix[SYM_A][SYM_G] = -10;
+    matrix[SYM_A][SYM_T] = -21;
+    matrix[SYM_A][SYM_N] = -1;
 
-    matrix[alpha_convert['G']][alpha_convert['A']] = -7;
-    matrix[alpha_convert['G']][alpha_convert['C']] = -18;
-    matrix[alpha_convert['G']][alpha_convert['G']] = 11;
-    matrix[alpha_convert['G']][alpha_convert['T']] = -18;
-    matrix[alpha_convert['G']][alpha_convert['N']] = -1;
+    matrix[SYM_G][SYM_A] = -7;
+    matrix[SYM_G][SYM_C] = -18;
+    matrix[SYM_G][SYM_G] = 11;
+    matrix[SYM_G][SYM_T] = -18;
+    matrix[SYM_G][SYM_N] = -1;
 
-    matrix[alpha_convert['C']][alpha_convert['A']] = -18;
-    matrix[alpha_convert['C']][alpha_convert['C']] = 11;
-    matrix[alpha_convert['C']][alpha_convert['G']] = -18;
-    matrix[alpha_convert['C']][alpha_convert['T']] = -7;
-    matrix[alpha_convert['C']][alpha_convert['N']] = -1;
+    matrix[SYM_C][SYM_A] = -18;
+    matrix[SYM_C][SYM_C] = 11;
+    matrix[SYM_C][SYM_G] = -18;
+    matrix[SYM_C][SYM_T] = -7;
+    matrix[SYM_C][SYM_N] = -1;
 
-    matrix[alpha_convert['T']][alpha_convert['A']] = -21;
-    matrix[alpha_convert['T']][alpha_convert['C']] = -10;
-    matrix[alpha_convert['T']][alpha_convert['G']] = -18;
-    matrix[alpha_convert['T']][alpha_convert['T']] = 9;
-    matrix[alpha_convert['T']][alpha_convert['N']] = -1;
+    matrix[SYM_T][SYM_A] = -21;
+    matrix[SYM_T][SYM_C] = -10;
+    matrix[SYM_T][SYM_G] = -18;
+    matrix[SYM_T][SYM_T] = 9;
+    matrix[SYM_T][SYM_N] = -1;
 
-    matrix[alpha_convert['N']][alpha_convert['A']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['C']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['G']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['T']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['N']] = -1;
+    matrix[SYM_N][SYM_A] = -1;
+    matrix[SYM_N][SYM_C] = -1;
+    matrix[SYM_N][SYM_G] = -1;
+    matrix[SYM_N][SYM_T] = -1;
+    matrix[SYM_N][SYM_N] = -1;
 
     dMat->m_bg_freqs[0] = 0.285; // A
     dMat->m_bg_freqs[1] = 0.215; // C
@@ -265,35 +253,35 @@ getMatrix(char *matrixName)
     dMat->gapextn = -6;
     // 18p43g non-symmetric matrix
     // matrix[consensus_base][sequence_base]
-    matrix[alpha_convert['A']][alpha_convert['A']] = 9;
-    matrix[alpha_convert['A']][alpha_convert['C']] = -15;
-    matrix[alpha_convert['A']][alpha_convert['G']] = -8;
-    matrix[alpha_convert['A']][alpha_convert['T']] = -18;
-    matrix[alpha_convert['A']][alpha_convert['N']] = -1;
+    matrix[SYM_A][SYM_A] = 9;
+    matrix[SYM_A][SYM_C] = -15;
+    matrix[SYM_A][SYM_G] = -8;
+    matrix[SYM_A][SYM_T] = -18;
+    matrix[SYM_A][SYM_N] = -1;
 
-    matrix[alpha_convert['G']][alpha_convert['A']] = -5;
-    matrix[alpha_convert['G']][alpha_convert['C']] = -16;
-    matrix[alpha_convert['G']][alpha_convert['G']] = 10;
-    matrix[alpha_convert['G']][alpha_convert['T']] = -16;
-    matrix[alpha_convert['G']][alpha_convert['N']] = -1;
+    matrix[SYM_G][SYM_A] = -5;
+    matrix[SYM_G][SYM_C] = -16;
+    matrix[SYM_G][SYM_G] = 10;
+    matrix[SYM_G][SYM_T] = -16;
+    matrix[SYM_G][SYM_N] = -1;
 
-    matrix[alpha_convert['C']][alpha_convert['A']] = -16;
-    matrix[alpha_convert['C']][alpha_convert['C']] = 10;
-    matrix[alpha_convert['C']][alpha_convert['G']] = -16;
-    matrix[alpha_convert['C']][alpha_convert['T']] = -5;
-    matrix[alpha_convert['C']][alpha_convert['N']] = -1;
+    matrix[SYM_C][SYM_A] = -16;
+    matrix[SYM_C][SYM_C] = 10;
+    matrix[SYM_C][SYM_G] = -16;
+    matrix[SYM_C][SYM_T] = -5;
+    matrix[SYM_C][SYM_N] = -1;
 
-    matrix[alpha_convert['T']][alpha_convert['A']] = -18;
-    matrix[alpha_convert['T']][alpha_convert['C']] = -8;
-    matrix[alpha_convert['T']][alpha_convert['G']] = -15;
-    matrix[alpha_convert['T']][alpha_convert['T']] = 9;
-    matrix[alpha_convert['T']][alpha_convert['N']] = -1;
+    matrix[SYM_T][SYM_A] = -18;
+    matrix[SYM_T][SYM_C] = -8;
+    matrix[SYM_T][SYM_G] = -15;
+    matrix[SYM_T][SYM_T] = 9;
+    matrix[SYM_T][SYM_N] = -1;
 
-    matrix[alpha_convert['N']][alpha_convert['A']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['C']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['G']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['T']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['N']] = -1;
+    matrix[SYM_N][SYM_A] = -1;
+    matrix[SYM_N][SYM_C] = -1;
+    matrix[SYM_N][SYM_G] = -1;
+    matrix[SYM_N][SYM_T] = -1;
+    matrix[SYM_N][SYM_N] = -1;
 
     dMat->m_bg_freqs[0] = 0.285; // A
     dMat->m_bg_freqs[1] = 0.215; // C
@@ -308,35 +296,35 @@ getMatrix(char *matrixName)
     dMat->gapextn = -5;
     // 20p43g non-symmetric matrix
     // matrix[consensus_base][sequence_base]
-    matrix[alpha_convert['A']][alpha_convert['A']] = 9;
-    matrix[alpha_convert['A']][alpha_convert['C']] = -15;
-    matrix[alpha_convert['A']][alpha_convert['G']] = -8;
-    matrix[alpha_convert['A']][alpha_convert['T']] = -17;
-    matrix[alpha_convert['A']][alpha_convert['N']] = -1;
+    matrix[SYM_A][SYM_A] = 9;
+    matrix[SYM_A][SYM_C] = -15;
+    matrix[SYM_A][SYM_G] = -8;
+    matrix[SYM_A][SYM_T] = -17;
+    matrix[SYM_A][SYM_N] = -1;
 
-    matrix[alpha_convert['G']][alpha_convert['A']] = -4;
-    matrix[alpha_convert['G']][alpha_convert['C']] = -15;
-    matrix[alpha_convert['G']][alpha_convert['G']] = 10;
-    matrix[alpha_convert['G']][alpha_convert['T']] = -15;
-    matrix[alpha_convert['G']][alpha_convert['N']] = -1;
+    matrix[SYM_G][SYM_A] = -4;
+    matrix[SYM_G][SYM_C] = -15;
+    matrix[SYM_G][SYM_G] = 10;
+    matrix[SYM_G][SYM_T] = -15;
+    matrix[SYM_G][SYM_N] = -1;
 
-    matrix[alpha_convert['C']][alpha_convert['A']] = -15;
-    matrix[alpha_convert['C']][alpha_convert['C']] = 10;
-    matrix[alpha_convert['C']][alpha_convert['G']] = -15;
-    matrix[alpha_convert['C']][alpha_convert['T']] = -4;
-    matrix[alpha_convert['C']][alpha_convert['N']] = -1;
+    matrix[SYM_C][SYM_A] = -15;
+    matrix[SYM_C][SYM_C] = 10;
+    matrix[SYM_C][SYM_G] = -15;
+    matrix[SYM_C][SYM_T] = -4;
+    matrix[SYM_C][SYM_N] = -1;
 
-    matrix[alpha_convert['T']][alpha_convert['A']] = -17;
-    matrix[alpha_convert['T']][alpha_convert['C']] = -8;
-    matrix[alpha_convert['T']][alpha_convert['G']] = -15;
-    matrix[alpha_convert['T']][alpha_convert['T']] = 9;
-    matrix[alpha_convert['T']][alpha_convert['N']] = -1;
+    matrix[SYM_T][SYM_A] = -17;
+    matrix[SYM_T][SYM_C] = -8;
+    matrix[SYM_T][SYM_G] = -15;
+    matrix[SYM_T][SYM_T] = 9;
+    matrix[SYM_T][SYM_N] = -1;
 
-    matrix[alpha_convert['N']][alpha_convert['A']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['C']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['G']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['T']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['N']] = -1;
+    matrix[SYM_N][SYM_A] = -1;
+    matrix[SYM_N][SYM_C] = -1;
+    matrix[SYM_N][SYM_G] = -1;
+    matrix[SYM_N][SYM_T] = -1;
+    matrix[SYM_N][SYM_N] = -1;
 
     dMat->m_bg_freqs[0] = 0.285; // A
     dMat->m_bg_freqs[1] = 0.215; // C
@@ -351,35 +339,35 @@ getMatrix(char *matrixName)
     dMat->gapextn = -5;
     // 25p43g non-symmetric matrix
     // matrix[consensus_base][sequence_base]
-    matrix[alpha_convert['A']][alpha_convert['A']] = 8;
-    matrix[alpha_convert['A']][alpha_convert['C']] = -13;
-    matrix[alpha_convert['A']][alpha_convert['G']] = -6;
-    matrix[alpha_convert['A']][alpha_convert['T']] = -15;
-    matrix[alpha_convert['A']][alpha_convert['N']] = -1;
+    matrix[SYM_A][SYM_A] = 8;
+    matrix[SYM_A][SYM_C] = -13;
+    matrix[SYM_A][SYM_G] = -6;
+    matrix[SYM_A][SYM_T] = -15;
+    matrix[SYM_A][SYM_N] = -1;
 
-    matrix[alpha_convert['G']][alpha_convert['A']] = -2;
-    matrix[alpha_convert['G']][alpha_convert['C']] = -13;
-    matrix[alpha_convert['G']][alpha_convert['G']] = 9;
-    matrix[alpha_convert['G']][alpha_convert['T']] = -13;
-    matrix[alpha_convert['G']][alpha_convert['N']] = -1;
+    matrix[SYM_G][SYM_A] = -2;
+    matrix[SYM_G][SYM_C] = -13;
+    matrix[SYM_G][SYM_G] = 9;
+    matrix[SYM_G][SYM_T] = -13;
+    matrix[SYM_G][SYM_N] = -1;
 
-    matrix[alpha_convert['C']][alpha_convert['A']] = -13;
-    matrix[alpha_convert['C']][alpha_convert['C']] = 9;
-    matrix[alpha_convert['C']][alpha_convert['G']] = -13;
-    matrix[alpha_convert['C']][alpha_convert['T']] = -2;
-    matrix[alpha_convert['C']][alpha_convert['N']] = -1;
+    matrix[SYM_C][SYM_A] = -13;
+    matrix[SYM_C][SYM_C] = 9;
+    matrix[SYM_C][SYM_G] = -13;
+    matrix[SYM_C][SYM_T] = -2;
+    matrix[SYM_C][SYM_N] = -1;
 
-    matrix[alpha_convert['T']][alpha_convert['A']] = -15;
-    matrix[alpha_convert['T']][alpha_convert['C']] = -6;
-    matrix[alpha_convert['T']][alpha_convert['G']] = -13;
-    matrix[alpha_convert['T']][alpha_convert['T']] = 8;
-    matrix[alpha_convert['T']][alpha_convert['N']] = -1;
+    matrix[SYM_T][SYM_A] = -15;
+    matrix[SYM_T][SYM_C] = -6;
+    matrix[SYM_T][SYM_G] = -13;
+    matrix[SYM_T][SYM_T] = 8;
+    matrix[SYM_T][SYM_N] = -1;
 
-    matrix[alpha_convert['N']][alpha_convert['A']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['C']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['G']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['T']] = -1;
-    matrix[alpha_convert['N']][alpha_convert['N']] = -1;
+    matrix[SYM_N][SYM_A] = -1;
+    matrix[SYM_N][SYM_C] = -1;
+    matrix[SYM_N][SYM_G] = -1;
+    matrix[SYM_N][SYM_T] = -1;
+    matrix[SYM_N][SYM_N] = -1;
 
     dMat->m_bg_freqs[0] = 0.285; // A
     dMat->m_bg_freqs[1] = 0.215; // C
@@ -391,8 +379,90 @@ getMatrix(char *matrixName)
     exit(1);
   }
 
+  // Penalize matches from/to a->t (masked) the same as to/from an N
+  //   - Assumes ordering from A->T and a->t
+  for( i = SYM_a; i <= SYM_t; i++ ) {
+    for( j = SYM_a; j <= SYM_t; j++ ) {
+      matrix[i][j] = -1;
+      matrix[j][i] = -1;
+    }
+    for( j = SYM_A; j <= SYM_T; j++ ) {
+      matrix[i][j] = -1;
+      matrix[j][i] = -1;
+    }
+    matrix[i][SYM_N] = -1;
+    matrix[SYM_N][i] = -1;
+  }
+
   dMat->m_lambda = calculateLambda(dMat);
 
   return ( dMat );
+}
+
+
+//
+// UNIT TESTS
+//
+
+MU_TEST(test_calculate_lambda)
+{
+  int i;
+  int j;
+  //                   A    C    G    T    N
+  int residues[5] = {  0,   1,   2,   3,   99 };
+  int **matrix = (int **)malloc(100*sizeof(int*));
+  for(i=0;i<100;i++)
+    matrix[i] = (int *)malloc(100*sizeof(int));
+
+  struct scoringSystem *dMat = (struct scoringSystem *)malloc(sizeof(struct scoringSystem));
+  dMat->matrix = matrix;
+  dMat->name = "plus_one_minus_one";
+  dMat->msize = 100;
+  dMat->alphabet = "ACGTN";
+  dMat->gapopen = 0;
+  dMat->gapextn = 0;
+  dMat->m_bg_freqs[0] = 0.25;
+  dMat->m_bg_freqs[1] = 0.25;
+  dMat->m_bg_freqs[2] = 0.25;
+  dMat->m_bg_freqs[3] = 0.25;
+
+  int match = 1;
+  int mismatch = -1;
+  for ( i = 0; i < 5; i++ )
+    for ( j = 0; i < 5; i++ )
+      if ( i == j )
+        matrix[residues[i]][residues[j]] = match;
+      else
+        matrix[residues[i]][residues[j]] = mismatch;
+
+  dMat->m_lambda = calculateLambda(dMat);
+
+  // 1.098609924316
+  mu_check(abs(1.09860-dMat->m_lambda) <= 0.00001);
+
+  match = 1;
+  mismatch = -3;
+  for ( i = 0; i < 5; i++ )
+    for ( j = 0; i < 5; i++ )
+      if ( i == j )
+        matrix[residues[i]][residues[j]] = match;
+      else
+        matrix[residues[i]][residues[j]] = mismatch;
+
+  dMat->m_lambda = calculateLambda(dMat);
+
+  // 1.374061584473
+  mu_check(abs(1.37406-dMat->m_lambda) <= 0.00001);
+
+}
+
+MU_TEST_SUITE(test_suite) {
+        MU_RUN_TEST(test_calculate_lambda);
+}
+
+void score_system_test()
+{
+  MU_RUN_SUITE(test_suite);
+  MU_REPORT();
 }
 

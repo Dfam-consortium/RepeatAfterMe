@@ -5,6 +5,7 @@
  *
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -104,7 +105,7 @@ printExtensionRegion( struct coreAlignment *currCore, int direction, int row, in
           strcat(coreSeq, base);
         }
       }
-      for (j = 1; j < 10; j++) {
+      for (j = 9; j > 0; j--) {
         if ( lastAligned + j == upperBound ) {
           strcat(extSeq,"*");
         }else if ( lastAligned + j > upperBound ) {
@@ -146,10 +147,20 @@ printExtensionRegion( struct coreAlignment *currCore, int direction, int row, in
   //printf("%11s [%c] %-11s\n", leftExt, coreSeq[0], rightExt);
 }
 
-
-// RMH: Corrected for core left/rightSeqPos change and TESTED
+/*
+ *  printCoreEdges
+ *   Print the core datastructure to the screen
+ *
+ *   coreAlign:  The core datastructure
+ *   seqLib:     The sequence library
+ *   omitBlanks: Omit cores where the seqIdx, leftSeqPos, and rightSeqPos are all 0
+ *                 (currently boolean 1 or 0)
+ *   debug:      Print additional internal-sequence cordinates and boundaries
+ *                 for debugging (currently 1 or 0 ).
+ */
 void
-printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, char omitBlanks) {
+printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib,
+               char omitBlanks, char debug) {
   struct coreAlignment *currCore;
   int j = 0;
   int n = 0;
@@ -160,7 +171,7 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, 
   char rightExt[20];
   char base[2];
   base[1] = '\0';
-  char idBuff[50];
+  char idBuff[51];
   idBuff[0] = '\0';
   char posBuffer[50];
   posBuffer[0] = '\0';
@@ -171,11 +182,19 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, 
   // This will be used to format column widths
   uint64_t maxPos = 0;
   int maxIDLen = 0;
+
+  int maxIdx = 1;
   for (currCore = coreAlign; currCore != NULL; currCore = currCore->next)
   {
+     // Check if this is a subsequence
+     uint64_t subseq_offset = 0;
+     if ( seqLib->offsets != NULL && seqLib->offsets[currCore->seqIdx] > 0 )
+       subseq_offset = seqLib->offsets[currCore->seqIdx];
+
      if ( omitBlanks == 1 && currCore->seqIdx == 0 && currCore->leftSeqPos == 0 &&
           currCore->rightSeqPos == 0 )
        break;
+
      uint64_t seqLowerBound = 0;
      if ( currCore->seqIdx > 0 )
        seqLowerBound = seqLib->boundaries[currCore->seqIdx - 1];
@@ -183,13 +202,19 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, 
      if ( strlen(seqLib->identifiers[currCore->seqIdx]) > maxIDLen )
        maxIDLen = strlen(seqLib->identifiers[currCore->seqIdx]);
 
-     if ( currCore->leftSeqPos - seqLowerBound + 1 > maxPos )
-       maxPos = currCore->leftSeqPos - seqLowerBound + 1;
-     if ( currCore->rightSeqPos - seqLowerBound + 1 > maxPos )
-       maxPos = currCore->rightSeqPos - seqLowerBound + 1;
+     if ( subseq_offset + currCore->leftSeqPos - seqLowerBound + 1 > maxPos )
+       maxPos = subseq_offset + currCore->leftSeqPos - seqLowerBound + 1;
+     if ( subseq_offset + currCore->rightSeqPos - seqLowerBound + 1 > maxPos )
+       maxPos = subseq_offset + currCore->rightSeqPos - seqLowerBound + 1;
+     maxIdx++;
   }
-  if ( maxIDLen > 32 )
-    maxIDLen = 32;
+  // Maximum ID we will display is 50 characters.  After that we will truncate at 47 and add "..."
+  if ( maxIDLen > 50 )
+    maxIDLen = 50;
+  if ( maxIDLen < 5 )
+    maxIDLen = 5;
+
+  // Sanity check the genomic coordinate lengths
   posBuffer[0] = '\0';
   if ( snprintf(posBuffer,50,"%ld",maxPos) > 50 ) {
     printf("printCoreEdges: warning this sequence position is absurdly high: %ld\n", maxPos);
@@ -199,19 +224,41 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, 
   if ( snprintf(posBuffer,50,"%ld",seqLib->length) > 50 ) {
     printf("printCoreEdges: warning this sequence position is absurdly high: %ld\n", seqLib->length);
   }
-  int maxSArrayLen = strlen(posBuffer);
-  //printf("maxSArrayLen = %d, maxPosLen = %d maxIDLen = %d\n", maxSArrayLen, maxPosLen, maxIDLen);
+  // There is a minimum so width so that the heading prints correctly
+  if ( maxPosLen*2+1 < 9 )
+    maxPosLen = 9;
 
-  printf("idx  seqID  BED-range  IntRange  CoreSeq\n");
-  printf("-------------------------------------------------------------------------------------\n");
+  int maxSArrayLen = strlen(posBuffer);
+  int maxIdxLen = floor(log10(maxIdx))+1;
+  if ( maxIdxLen < 4 )
+    maxIdxLen = 4;
+
+  if ( debug == 1 ){
+    printf("%-*s %-*s %-*s %-*s %-*s  Left-Flank           Core           Right-Flank  %-*s Hard-Bounds Soft-Bounds\n",
+         maxIdxLen, "Seq", maxIDLen, "Ident", maxPosLen*2+1,
+         "BED-range", 6, "Orient", 4 , "L/R?", maxSArrayLen, "seq[]-core");
+    printf("----------------------------------------------------------------------------------------------\n");
+  }else {
+    printf("%-*s %-*s %-*s %-*s %-*s  Left-Flank           Core           Right-Flank\n",
+         maxIdxLen, "Seq", maxIDLen, "Ident", maxPosLen*2+1,
+         "BED-range", 6, "Orient", 4 , "L/R?");
+    printf("------------------------------------------------------------------------------------\n");
+  }
   //
-  // leftSeqPos/rightSeqPos are the core coordinates (0-based,fully closed ...ie. inclusive) 
+  // leftSeqPos/rightSeqPos are the core coordinates (0-based,fully closed ...ie. inclusive)
+  // NOTE: leftSeqPos will be greater than rightSeqPos when the orientation of the word is reversed.
   //
   for (currCore = coreAlign; currCore != NULL; currCore = currCore->next)
   {
      if ( omitBlanks == 1 && currCore->seqIdx == 0 && currCore->leftSeqPos == 0 &&
           currCore->rightSeqPos == 0 )
        break;
+
+     // Check if this is a subsequence
+     uint64_t subseq_offset = 0;
+     if ( seqLib->offsets != NULL && seqLib->offsets[currCore->seqIdx] > 0 )
+       subseq_offset = seqLib->offsets[currCore->seqIdx];
+
     // Stats for sequence/core
     uint64_t lowerBound = 0;
     if (currCore->seqIdx > 0)
@@ -219,23 +266,24 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, 
     uint64_t upperBound = seqLib->boundaries[currCore->seqIdx] - 1;
     int coreWidth = abs(currCore->rightSeqPos - currCore->leftSeqPos) + 1;
 
-    // Build out ID
-    strncpy(idBuff, seqLib->identifiers[currCore->seqIdx], maxIDLen); 
+    // Build out ID up to maxIDLen
+    strncpy(idBuff, seqLib->identifiers[currCore->seqIdx], maxIDLen);
     idBuff[maxIDLen] = '\0';
     int idLen = strlen(idBuff);
-    for ( i = 0; i < maxIDLen - idLen; i++ ) 
+    for ( i = 0; i < maxIDLen - idLen; i++ )
       strcat(idBuff," ");
-    if ( idLen == 32 )
-      strcat(idBuff,"...");
+    if ( strlen(seqLib->identifiers[currCore->seqIdx]) > 50 )
+      for ( i = 0; i < 3; i++ )
+        idBuff[maxIDLen-i-1] = '.';
 
     // Put core alignment coordinates back into BED format
     char tmpBuff[50];
     tmpBuff[0] = '\0';
     if (currCore->orient)
-      sprintf(tmpBuff,"%ld-%ld",currCore->rightSeqPos-lowerBound, currCore->leftSeqPos-lowerBound+1);
+      sprintf(tmpBuff,"%ld-%ld",subseq_offset+currCore->rightSeqPos-lowerBound, subseq_offset+currCore->leftSeqPos-lowerBound+1);
     else
-      sprintf(tmpBuff,"%ld-%ld",currCore->leftSeqPos-lowerBound, currCore->rightSeqPos-lowerBound+1);
-    int numPads = ((maxSArrayLen*2)+1) - strlen(tmpBuff);
+      sprintf(tmpBuff,"%ld-%ld",subseq_offset+currCore->leftSeqPos-lowerBound, subseq_offset+currCore->rightSeqPos-lowerBound+1);
+    int numPads = ((maxPosLen*2)+1) - strlen(tmpBuff);
     posBuffer[0] = '\0';
     for ( i = 0; i < numPads; i++ )
       strcat(posBuffer, " ");
@@ -244,13 +292,13 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, 
     // Format the internal sequence* coordinates
     tmpBuff[0] = '\0';
     sprintf(tmpBuff,"%ld-%ld",currCore->leftSeqPos, currCore->rightSeqPos);
-    numPads = ((maxPosLen*2)+1) - strlen(tmpBuff);
+    numPads = ((maxSArrayLen*2)+1) - strlen(tmpBuff);
     sArrBuffer[0] = '\0';
     for ( i = 0; i < numPads; i++ )
       strcat(sArrBuffer, " ");
     strcat(sArrBuffer, tmpBuff);
 
-    // For cores up to 19bp display the full core sequence with up to 10bp 
+    // For cores up to 19bp display the full core sequence with up to 10bp
     // flanking:
     //
     //       AATACAAAAA [          ATT           ] AGCCGGGCG
@@ -258,7 +306,7 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, 
     // or if there is fewer than bp of flanking display the end with a '*':
     //
     //          *CAAAAA [          ATT           ] AGCCGGGCG
-    // 
+    //
     // If the core is 20bp or larger display only 10bp core edges as:
     //
     //       CTCTACTAAA [AATACAAAAA....AGCCGGGCGT] GGTGGCGGG
@@ -267,19 +315,24 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, 
     {
       //
       // Reverse Strand Cores
-      //
+      //    NOTE: in the reverse strand case the leftPos is the higher
+      //          numerical coordinate:
+      //               e.g: leftSeqPos = 32
+      //                    rightSeqPos = 10
+
 
       // Left Flanking Region
       disp = 9;
       if (currCore->leftSeqPos + 1 + disp > upperBound)
-        disp = upperBound - currCore->leftSeqPos + 1;
+        disp = upperBound - currCore->leftSeqPos - 1;
 
       leftExt[0] = '\0';
       if (disp < 9)
         strcat(leftExt, "*");
-      for (j = disp; j >= 0; j--)
+      for (j = disp; j > 0; j--)
       {
-        base[0] = num_to_char(compl(seqLib->sequence[currCore->leftSeqPos + j + 1]));
+        // Possibly + 1
+        base[0] = num_to_char(compl(seqLib->sequence[currCore->leftSeqPos + j]));
         strcat(leftExt, base);
       }
 
@@ -328,9 +381,8 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, 
       if (disp < 9)
         strcat(rightExt, "*");
 
-      // Display
-      printf("n=%4d %s %s %s:-  ", n,
-             idBuff, posBuffer, sArrBuffer );
+      printf("%-*d %s %s -      %d/%d ", maxIdxLen, n,
+             idBuff, posBuffer, currCore->leftExtendable, currCore->rightExtendable);
     }
     else
     {
@@ -339,14 +391,14 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, 
       //
 
       // Left Flanking Region
-      disp = 10;
+      disp = 9;
       if (currCore->leftSeqPos < disp)
         disp = currCore->leftSeqPos;
       else if (currCore->leftSeqPos - disp < lowerBound)
         disp = currCore->leftSeqPos - lowerBound;
 
       leftExt[0] = '\0';
-      if (disp < 10)
+      if (disp < 9)
         strcat(leftExt, "*");
       for (j = -disp; j <= -1; j++)
       {
@@ -396,8 +448,9 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, 
       }
       if (disp < 9)
         strcat(rightExt, "*");
-      printf("n=%4d %s %s %s:+  ", n,
-             idBuff, posBuffer, sArrBuffer);
+
+      printf("%-*d %s %s +      %d/%d ", maxIdxLen, n,
+             idBuff, posBuffer, currCore->leftExtendable, currCore->rightExtendable);
     }
     if (currCore->leftExtendable)
       printf("%11s", leftExt);
@@ -406,6 +459,11 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib, 
     printf(" [%-24s] ", coreSeq);
     if (currCore->rightExtendable)
       printf("%-11s", rightExt);
+
+    if ( debug == 1 )
+    {
+      printf(" %s %ld-%ld %ld-%ld", sArrBuffer, lowerBound, upperBound, currCore->lowerSeqBound, currCore->upperSeqBound);
+    }
     printf("\n");
     n++;
   }

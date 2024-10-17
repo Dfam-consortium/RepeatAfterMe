@@ -85,8 +85,16 @@ use strict;
 use Getopt::Long;
 use Data::Dumper;
 use FindBin;
-use lib $FindBin::RealBin;
-use lib "$FindBin::RealBin/../";
+# This script can be used from RepeatAfterMe/util directory or
+# it may be installed in RepeatModeler/util
+my $rmodDir = "/home/rhubley/projects/RepeatModeler";
+if ( -s "$FindBin::RealBin/../RepModelConfig.pm" ) {
+  use lib "$FindBin::RealBin";
+  use lib "$FindBin::RealBin/..";
+  $rmodDir = "$FindBin::RealBin/..";
+}else {
+  use lib "/home/rhubley/projects/RepeatModeler";
+}
 use RepModelConfig;
 use MultAln;
 use EMBL;
@@ -96,14 +104,17 @@ use File::Path 'rmtree';
 use File::Temp qw/ tempfile tempdir /;
 use Cwd;
 
+# RepeatModeler version
+my $RMOD_VERSION = $RepModelConfig::VERSION;
 
 # Program version
-my $Version = 0.1;
+my $Version = 0.2;
 
 #
 # Paths
 #
-my $RepeatAfterMeDir = "RepeatAfterMe";
+#my $RepeatAfterMeDir = "RepeatAfterMe";
+my $RepeatAfterMeDir = "/home/rhubley/notebooks/2024/1004-repeat_after_me_satellites/RepeatAfterMe-dev";
 
 
 # Option processing
@@ -131,7 +142,6 @@ sub usage {
   exit( 1 );
 }
 
-
 my $DEBUG = 0;
 $DEBUG = 1 if ( $options{'debug'} );
 
@@ -154,6 +164,29 @@ my $genomeFile = $options{'assembly'};
 my $inputFile = $options{'input'};
 my $outputFile = $options{'output'};
 
+my $re_bandwidth = 40;
+my $re_version = "Unknown";
+open IN,"$RepeatAfterMeDir/RAMExtend -h|" or die;
+while (<IN>) {
+  # RAMExtend Version 0.0.4 - build 436 date 20241015
+  if ( /RAMExtend Version (\S+)/ ) {
+    $re_version = $1;
+    last;
+  }
+}
+close IN;
+
+print "##\n";
+print "## extend-stk.pl\n";
+print "##\n";
+print "##   Program Version      : $Version\n";
+print "##   RAMExtend Version    : $re_version\n";
+print "##   RepeatModeler Version: $RMOD_VERSION\n";
+print "##   Genome               : $genomeFile\n";
+print "##   Input                : $inputFile\n";
+print "##   Output               : $outputFile\n";
+print "##\n";
+
 # Open up the stockholm file and read in data
 my $stockholmColl = SeedAlignmentCollection->new();
 open my $IN, "<$inputFile"
@@ -172,13 +205,14 @@ my $triggerSave = 0;
 for ( my $i = 0 ; $i < $stockholmColl->size() ; $i++ ) {
   my $seedAlign   = $stockholmColl->get( $i );
   my $id          = $seedAlign->getId();
+
+  print "Working on $id..\n";
  
   # NOTE: This currently ignores the stockholm reference line and generates
   #       one by calling a consensus.
   my $tdiv = 14;
   my $mAlign = MultAln->new( seedAlignment => $seedAlign );
   my ( $null, $totDiv, $avgDiv ) = $mAlign->kimuraDivergence();
-  print "MultAln Kimura divergence: $avgDiv\n";
   
   # TODO: make command line override
   $tdiv = $avgDiv;
@@ -206,7 +240,11 @@ for ( my $i = 0 ; $i < $stockholmColl->size() ; $i++ ) {
   $reference =~ s/\-//g;
 
   my $tdir = tempdir( DIR => cwd, CLEANUP => $CLEANUP );
-  print "Working on $id.. [ cons length = " . length($reference) . ", instances = " .  $seedAlign->alignmentCount() . " ] in $tdir\n";
+
+  print "  - Temporary directory: $tdir\n";
+  print "  - Consensus length [recalculated]: " . length($reference) . "\n";
+  print "  - Kimura divergence: $avgDiv\n";
+  print "  - Instances: " . $seedAlign->alignmentCount() . "\n";
 
   open TSV,">$tdir/linup.tsv" or die "Could not open $tdir/linup.tsv for writing!\n";
 
@@ -215,6 +253,11 @@ for ( my $i = 0 ; $i < $stockholmColl->size() ; $i++ ) {
     my ( $assemblyName, $sequenceName, $start, $end, $orient, $sequence ) =
       $seedAlign->getAlignment( $j );
 
+    # TODO: This disqualifies user-generated identifiers like gi|1234, perhaps this check should be an option we use internally
+    if ( $sequenceName =~ /^gi\|\d+$/ ) {
+      warn "File contains unresolved sequenceNames ($sequenceName) from RepeatModeler -- this is a RepeatModeler bug.  Deleting sequence.\n";
+      next;   
+    }
     $start--; # convert to zero-based half open
 
     # insertions...
@@ -229,6 +272,8 @@ for ( my $i = 0 ; $i < $stockholmColl->size() ; $i++ ) {
       $start -= 50;
       $end -= 50;
     }
+
+    # TODO: Add sanity check for sequence ranges through comparison with the 2bit file to the seed alignment data
 
     # Tolerate up to 10bp from edge
     if ( $sequence =~ /^[\.]{0,10}[^\.]/ && $sequence =~ /[^\.][\.]{0,10}$/ ) {
@@ -254,22 +299,37 @@ for ( my $i = 0 ; $i < $stockholmColl->size() ; $i++ ) {
   my $t2 = "Too few sequences";
   my $cmd = "";
   if ( $extendable_count > 3 ) {
-  $cmd = "$RepeatAfterMeDir/RAMExtend -twobit $genomeFile -bandwidth 500 -matrix $div" . "p43g -ranges $tdir/linup.tsv -outtsv $tdir/repam-ranges.tsv -outfa $tdir/repam-repseq.fa -cons $tdir/repam-cons.fa >& $tdir/repam.log";
-  print "Running extendalign..\n";
-  print "Running: $cmd\n";
-  system($cmd);
-  #Extended right: 0 bp
-  #Extended left : 0 bp
-  $t1 = `fgrep "Extended right: 0 bp" $tdir/repam.log`;
-  $t2 = `fgrep "Extended left : 0 bp" $tdir/repam.log`;
+    $cmd = "$RepeatAfterMeDir/RAMExtend -twobit $genomeFile -L 20000 -bandwidth $re_bandwidth -matrix $div" . "p43g -ranges $tdir/linup.tsv -outtsv $tdir/repam-ranges.tsv -outfa $tdir/repam-repseq.fa -cons $tdir/repam-cons.fa > $tdir/repam.log 2>&1";
+    print "  - Running RAMExtend [bandwidth=$re_bandwidth, matrix=$div" . "p43g]..\n";
+    print "     - Command: $cmd\n";
+    system($cmd);
+    my $retCode = $? >> 8;
+    if ( $retCode != 0 ) {
+      print "  RAMExtend failed! [$retCode]:\n";
+      my $log = `cat $tdir/repam.log`;
+      print "  repam.log: $log\n";
+      die;
+    }
+
+    #Extended right: 0 bp
+    #Extended left : 0 bp
+    $t1 = `fgrep "Extended right: 0 bp" $tdir/repam.log`;
+    $t2 = `fgrep "Extended left : 0 bp" $tdir/repam.log`;
   }
     
   #Program duration is 4.0 sec = 0.1 min = 0.0 hr
   my $newCons = "";
   #print "t1=>$t1< t2=>$t2<\n";
   if ( $t1 && $t2 ) {
-    print "**Could not extend**\n";
+    # TODO: Use this example for previous skip case
+    print "  **Could not extend**\n";
+    my $cnotes = $seedAlign->getCuratorComments();
+    $cnotes .= "RAMExtend[$re_version]: left: 0 bp, right: 0bp\n";
+    $seedAlign->setCuratorComments( $cnotes );
     print OUTPUT "" . $seedAlign->toString();
+    unless($DEBUG) {
+      rmtree([ $tdir ]);
+    }
     next;
   }elsif ( -e "$tdir/repam-cons.fa") {
     open IN,"<$tdir/repam-cons.fa" or die;
@@ -318,6 +378,10 @@ for ( my $i = 0 ; $i < $stockholmColl->size() ; $i++ ) {
     $desc .= " [possibly part of segmental duplication]";
     $seedAlign->setDescription( $desc );
     print OUTPUT "" . $seedAlign->toString();
+    # Cleanup
+    unless($DEBUG) {
+      rmtree([ $tdir ]);
+    }                
     next;
   }
 
@@ -327,13 +391,64 @@ for ( my $i = 0 ; $i < $stockholmColl->size() ; $i++ ) {
   print "  extended by " . (length($newCons)-length($reference)) . " bp\n";
   my $prevCons;
 
-  print "Refining consensus...\n";
+  # ExtendAlign sometimes produces duplicate identical sequences (same position, same nucleotides,
+  # different source locations). Report and remove these cases.
+  #
+  # TODO: This could be further generalized, e.g. deduplicating sequence ranges that overlap by >80%.
+  #
+  open my $repseq_in, "<$tdir/repam-repseq.fa" or die;
+  open my $nodups_out, ">$tdir/repam-repseq-nodups.fa" or die;
+  my %seen_seqs = ();
+  my $seqhead = undef;
+  my $seqname = undef;
+  my $seq = '';
+  while (<$repseq_in>) {
+    chomp;
+    if (/^>(\S+)/) {
+      if (defined $seqhead) {
+        my $key = "$seqname=$seq";
+        if (exists $seen_seqs{$key}) {
+          print "Warning: ignored duplicate (identical sequence) for $seqname\n";
+        } else {
+          print $nodups_out "$seqhead\n$seq\n";
+          $seen_seqs{$key} = 1;
+        }
+        $seq = '';
+      }
+
+      $seqhead = $_;
+      $seqname = $1;
+    } else {
+      $seq .= $_;
+    }
+  }
+  # NB: duplicated code to handle last sequence in file
+  if (defined $seqhead) {
+    my $key = "$seqname=$seq";
+    if (exists $seen_seqs{$key}) {
+      print "Warning: ignored duplicate (identical sequence) for $seqname\n";
+    } else {
+      print $nodups_out "$seqhead\n$seq\n";
+      $seen_seqs{$key} = 1;
+    }
+    $seq = '';
+  }
+  close $repseq_in;
+  close $nodups_out;
+
+  print "  - Refining consensus...\n";
   my $maxIter = 10;
-  system("$FindBin::Bin/alignAndCallConsensus.pl -c $tdir/repam-newrep.fa -e $tdir/repam-repseq.fa -refine $maxIter -st -q");
+  my $cmd = "$rmodDir/util/alignAndCallConsensus.pl -c $tdir/repam-newrep.fa -e $tdir/repam-repseq.fa -refine $maxIter -st -q";
+  print "     - Running $cmd\n";
+  system($cmd);
   # User wants the out file saved
   if ( $options{'msaout'} && -s "$tdir/repam-newrep.out" ) {
     system("cp $tdir/repam-newrep.out " . $options{'msaout'});
   }
+  # TODO: Add exit case (similar to above patterns) whereby, if we don't generate a stockholm file, we should report produce an error ( perhaps mention in curation notes ) and move on to next family.
+  #
+  # TODO: Catch errors from alignAndCallConsensus.pl -- namely the one where it can't find the reference sequence in the alignment output.
+  #
 
   # Now rebuild the stockholm entry and save to ...
   my $singleSeedColl = SeedAlignmentCollection->new();
@@ -355,6 +470,9 @@ for ( my $i = 0 ; $i < $stockholmColl->size() ; $i++ ) {
   for ( my $k = 0; $k < $seedAlign->cladeCount(); $k++ ){
     $finalAlign->addClade( $seedAlign->getClade($k) );
   }
+  my $cnotes = $seedAlign->getCuratorComments();
+  $cnotes .= "RAMExtend[$re_version]: left: $leftExt bp, right: $rightExt bp\n";
+  $finalAlign->setCuratorComments( $cnotes );
   #open OSTK,">$id.stk-final" or die;
   #print OSTK "" . $finalAlign->toString();
   #close OSTK;

@@ -1,5 +1,5 @@
 /*
- * ExtendAlign
+ * RAMExtend
  *
  * Use a RepeatScout-like method to simultaneously extend
  * a multiple alignment anchored by a set of genomic ranges.
@@ -11,13 +11,13 @@
  */
 #include <stdio.h>
 #include <sys/types.h>
-//typedef unsigned int uint;
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
 #include <math.h>
+
 #include "kentsrc/common.h"
 #include "kentsrc/hash.h"
 #include "kentsrc/linefile.h"
@@ -28,8 +28,8 @@
 #include "score_system.h"
 #include "bnw_extend.h"
 #include "report.h"
-#include "extend_align.h"
- 
+#include "ram_extend.h"
+
 
 // From Version.c created by the Makefile
 extern const char *Version;
@@ -47,7 +47,8 @@ char *MATRIX_FILE = NULL;       // Eventually a file to read for a custom
 char *OUTTSV_FILE = NULL;       // Where to store the table of extended ranges
 char *OUTFA_FILE = NULL;        // Where to store the final extended sequences
 char *CONS_FILE = NULL;         // Where to put consensus output
-char *RANGES_FILE = NULL;       //
+char *RANGES_FILE = NULL;       // Where to store the extended ranges
+char *OUTMAT_FILE = NULL;       // Where to dump the DP matrix for debugging
 int VERBOSE;                    // How chatty? Real chatty? Really really
                                 // chatty?
                                 // Super extra really chatty?
@@ -55,11 +56,11 @@ int L;                          // The maximum distance to attempt extension of 
                                 //   core range. Length of master is 2*L+l (L >>> l)
 int flanking = 0;               // The number of bp to add to the left/right side
                                 //   of each -outfa sequence.
-int MAXOFFSET;                  // max offset (5)
-int MAXN;                       // max #occ of lmer (10000)
+int BANDWIDTH;                  // max offset (14)
+int MAXN;                       // max #occ of kmer (10000)
 int WHEN_TO_STOP;               // stop if no improvement after extending
                                 // this far (100)
-float MINENTROPY;               // ignore freq l-mers with entropy less than
+float MINENTROPY;               // ignore freq kmers with entropy less than
                                 // (0.70)
 
 // Parameters dependent on matrix used
@@ -106,13 +107,13 @@ int N;
 //      made that we will never count an insertion followed by deletion as
 //      a valid transiton.
 //
-int ****score;                  // 2 * MAXN * (2*MAXOFFSET+1) * 2
+int ****score;                  // 2 * MAXN * (2*BANDWIDTH+1) * 2
 
 //
 //     Reduce memory use by freeing once no longer needed
 //
 //TODO: Move this into the core range structure
-int *bestbestscore;             // best alignment score for this n for any y
+//int *overall_sequence_high_score;             // best alignment score for this n for any y
                                 // or w seen so far
 // Unused
 int num_threads = 0;            // Number of threads or 0 if not
@@ -123,19 +124,19 @@ void
 usage()
 {
   printf(
-          "ExtendAlign Version %s - build %s date %s\n"
+          "RAMExtend Version %s - build %s date %s\n"
           "\n"
-          "  Perform a multiple alignment extension given an existing\n"
-          "  core multiple alignment.  The core may be a set of word\n"
-          "  matches, a previously development multiple alignment, or the\n"
-          "  the result of any process that defines a core set of sequence\n"
-          "  relationships.  The only requirement is that the sequences are\n"
+          "  Perform a multiple sequence alignment (MSA) extension given\n"
+          "  an existing core MSA and the flanking sequences.  The core\n"
+          "  may be a set of word matches, a previously development MSA,\n"
+          "  or the the result of any process that defines a core set of\n"
+          "  sequence relationships.  The only requirement is that the sequences are\n"
           "  aligned to nearly the same point along one or both of the core\n"
-          "  edges.  The internal aspects of the core alignment itself are\n"
-          "  not used taken into account during extension.\n"
+          "  edges.  The extension process is a form of anchored alignment\n"
+          "  where the details of the core alignment are considered fixed.\n"
           "\n"
           "Usage: \n"
-          "  ExtendAlign -twobit <seq.2bit> -ranges <ranges.tsv> [opts]\n"
+          "  RAMExtend -twobit <seq.2bit> -ranges <ranges.tsv> [opts]\n"
           "\n"
           "--------------------------------------------------------------------------------------------\n"
           "     -cons <seq.fa>        # Save the left/right consensus sequences to a FASTA file.\n"
@@ -174,19 +175,30 @@ usage()
           "                           #   (original: -20, nucleotide matrix:-90)\n"
           "     -stopafter <num>      # Stop the alignment after this number of no-progress columns (100)\n"
           "     -minlength <num>      # Minimum required length for a sequence to be reported (50)\n"
+          "     -outmat <file>        # Dump the dp matrix paths to a file for debugging\n"
           "     -v[v[v[v]]]           # How verbose do you want it to be?  -vvvv is super-verbose\n"
-          "     -unittests            # Run unit tests\n"
           "\n"
-          "Ranges:\n"
-          "   Ranges are supplied in the form of a modified BED-6 format:\n"
+          "Ranges:\n\n"
+          "   Ranges are supplied in the form of a modified BED-6 format:\n\n"
           "      field-1:chrom     : sequence identifier\n"
           "      field-2:chromStart: lower aligned position ( 0 based )\n"
           "      field-3:chromEnd  : upper aligned position ( 0 based, half open )\n"
-          "      field-4:name      : left extendable flag ( 0 = no, 1 = yes )\n"
-          "      field-5:score     : right extendable flag \n"
+          "      field-4:left-ext  : left extendable flag ( 0 = no, 1 = yes ) [BED-6 'name' field]\n"
+          "      field-5:right-ext : right extendable flag ( 0 = no, 1 = yes ) [BED-6 'score' field]\n"
           "      field-6:strand    : strand ( '+' = forward, '-' = reverse )\n"
+          "\n"
           "   The fields are tab separated. Coordinates are zero-based half\n"
           "   open.\n"
+          "\n"
+          "   Left/Right extension flags are used to turn off extension for sequences that\n"
+          "   do not reach the edge of the core alignment (e.g. fragments aligning in the\n"
+          "   center of the core MSA, or one or the other edge only).  These sequences are\n"
+          "   less likely to include related flanking sequence and weigh down the extension\n"
+          "   score uneccesarily.  For these sequences it is desirable to flag one edge or\n"
+          "   the other as 'unextendable'.  The 'left'/'right' designations refer to the\n"
+          "   edges of the core MSA alignment. The 'left' flag may refer to the start or\n"
+          "   the end coordinate depending on the state of the orientation flag\n"
+          "   ('+' left=start, '-' left=end etc.).\n"
           , Version, BuildNumber, BuildDate);
   exit(1);
 
@@ -201,6 +213,7 @@ main(int argc, char *argv[])
   int opt;
   FILE *fp = NULL;
   FILE *fp_fa = NULL;
+  FILE *fp_mat = NULL;
   start = time(0);
 
   if (co_get_string(argc, argv, "-ranges", &RANGES_FILE) == 0)
@@ -212,9 +225,10 @@ main(int argc, char *argv[])
   co_get_int(argc, argv, "-addflanking", &flanking);
   co_get_string(argc, argv, "-outtsv", &OUTTSV_FILE);
   co_get_string(argc, argv, "-outfa", &OUTFA_FILE);
+  co_get_string(argc, argv, "-outmat", &OUTMAT_FILE);
   co_get_string(argc, argv, "-cons", &CONS_FILE);
   co_get_int(argc, argv, "-L", &L) || (L = 10000);
-  co_get_int(argc, argv, "-bandwidth", &MAXOFFSET) || (MAXOFFSET = 14);
+  co_get_int(argc, argv, "-bandwidth", &BANDWIDTH) || (BANDWIDTH = 14);
   co_get_int(argc, argv, "-maxoccurrences", &MAXN) || (MAXN = 10000);
   co_get_int(argc, argv, "-stopafter", &WHEN_TO_STOP) || (WHEN_TO_STOP = 100);
   if (!co_get_int(argc, argv, "-threads", &num_threads))
@@ -313,15 +327,7 @@ main(int argc, char *argv[])
     exit(1);
   }
 
-  if (co_get_bool(argc, argv, "-unittests", &opt))
-  {
-    test_global_align();
-    test_cons_seed_extend();
-    test_compute_nw_row();
-    exit(1);
-  }
-
-  // Consensus sequence which is lmer + left and right extension max (L)
+  // Consensus sequence which is kmer + left and right extension max (L)
   master = (char *) malloc((2 * L + l + 1) * sizeof(char));
   if (NULL == master)
   {
@@ -330,68 +336,30 @@ main(int argc, char *argv[])
   }
   master[2 * L + l] = '\0';
 
-  bestbestscore = (int *) malloc(MAXN * sizeof(int));
-  if (NULL == bestbestscore)
-  {
-    fprintf(stderr, "Could not allocated space for internal arrays\n");
-    exit(1);
-  }
+  //overall_sequence_high_score = (int *) malloc(MAXN * sizeof(int));
+  //if (NULL == overall_sequence_high_score)
+  //{
+  //  fprintf(stderr, "Could not allocated space for internal arrays\n");
+  //  exit(1);
+  //}
 
   if (co_get_string(argc, argv, "-twobit", &SEQUENCE_FILE))
   {
     dnaUtilOpen();
-    seqLib = loadSequenceSubset(SEQUENCE_FILE, RANGES_FILE,
-                                &coreAlign, &N);
-    printf("Read in %d ranges, and %ld bp of sequence\n", N, seqLib->length);
+    //seqLib = loadSequenceSubset(SEQUENCE_FILE, RANGES_FILE,
+    //                            &coreAlign, &N);
+    //
+    // This was a mistake....this should be L not L*2!
+    //seqLib = loadSequenceSubsetMinimal(SEQUENCE_FILE, RANGES_FILE,
+    //                                    &coreAlign, &N, L*2 );
+    seqLib = loadSequenceSubsetMinimal(SEQUENCE_FILE, RANGES_FILE,
+                                        &coreAlign, &N, L );
+
   }
   else if (co_get_string(argc, argv, "-sequence", &SEQUENCE_FILE))
   {
     printf("-sequence is deprecated!....may return someday\n");
     exit(1);
-    // Crudely estimate the sequence length.  I.e it can't be larger
-    // than the length ( in bytes ) of the input file itself.  However,
-    // this is a crude estimate because it is often much smaller than
-    // the input file size after accounting for line terminations and
-    // FASTA identifier strings.
-    fp = fopen(SEQUENCE_FILE, "ro");
-    if (NULL == fp)
-    {
-      fprintf(stderr, "Could not open sequence file %s\n", SEQUENCE_FILE);
-      exit(1);
-    }
-    fseek(fp, 0, SEEK_END);
-    off_t ft_size = ftello(fp);
-    // Sanitize the cast to unsigned
-    if (ft_size > 0)
-      seqLength = (uint64_t) ft_size;
-    else
-    {
-      printf("Error: input sequence file is empty!\n");
-      exit(1);
-    }
-
-    //sequence = (char *) malloc((seqLength + 1) * sizeof(char));
-    //if (NULL == sequence)
-   // {
-   //   fprintf(stderr, "Could not allocate space for sequence\n");
-   //   exit(1);
-   // }
-    // build sequence : We store the forward sequence and calculate
-    // the reverse on the fly. Calculate the true size of the input
-    // sequence and update the global variable here.
-    //seqLength = build_sequence(sequence, SEQUENCE_FILE);
-
-    // DEBUG
-    finish = time(0);
-    duration = difftime(finish, start);
-    printf
-      ("Sequences read in (%ld bp): Program duration is %.1lf sec = %.1lf min = %.1lf hr\n",
-       seqLength, duration, duration / 60.0, duration / 3600.0);
-    // DEBUG
-
-    // Setup the locations of the aligned sequences
-    //read_ranges(MAXN, RANGES_FILE, sequence_idents, leftpos, rightpos, rev);
-    printf("Read in %d anchor ranges\n", N);
   }
   else
   {
@@ -399,37 +367,107 @@ main(int argc, char *argv[])
     exit(1);
   }
 
+  if ( OUTMAT_FILE != NULL )
+  {
+    if ((fp_mat = fopen(OUTMAT_FILE, "w")) == NULL)
+    {
+      fprintf(stderr, "Could not create the output matrix file %s\n", OUTMAT_FILE);
+      exit(1);
+    }
+  }
+
+
   //
-  // print parameters
+  // Introduce ourselves
   //
+  printf( "\nRAMExtend Version %s - build %s date %s\n"
+          , Version, BuildNumber, BuildDate);
   print_parameters();
+  printf("Read in %d ranges, and %ld bp of sequence\n\n", N, seqLib->length);
 
   // Initialize data structures
-  score = allocate_score(MAXN,MAXOFFSET);
+  score = allocate_score(MAXN,BANDWIDTH);
 
   finish = time(0);
   duration = difftime(finish, start);
 
-// DEBUG
-  printCoreEdges(coreAlign, seqLib, 0);
+  if ( VERBOSE ) {
+    printCoreEdges(coreAlign, seqLib, 0, 1);
+  }else {
+    printCoreEdges(coreAlign, seqLib, 0, 0);
+  }
 
   // Initialize master to single N ( since l=1 in this implementation )
   for (x = 0; x < l; x++)
     master[L + x] = 99;
 
-  // printf("Extending right: ");
-  // Direction: 1=right, 0=left
+  // NOTE: At this stage the coreAlign->score fields are initialized to
+  // zero.
+
+  // Extend RIGHT first (direction = 1)
   int rightbp = extend_alignment(1, coreAlign, score, seqLib, master,
-                                 MAXOFFSET, CAPPENALTY, MINIMPROVEMENT, L, N,
-                                 bestbestscore, scoreParams);
+                                 BANDWIDTH, CAPPENALTY, MINIMPROVEMENT, L, N,
+                                 scoreParams, fp_mat);
   printf("Extended right: %d bp\n", rightbp);
-  // printf("Extending left: ");
+
+  struct coreAlignment *s;
+  for (s = coreAlign; s != NULL; s = s->next)
+  {
+    int s_seqIdx = s->seqIdx;
+    char *s_ident = seqLib->identifiers[s_seqIdx];
+    uint64_t s_seqLowerBound = 0;
+    if (s_seqIdx > 0)
+      s_seqLowerBound = seqLib->boundaries[s_seqIdx - 1];
+
+    uint64_t extended_pos = (s->rightSeqPos + s->rightExtensionLen);
+    if (s->orient)
+      extended_pos = (s->rightSeqPos - s->rightExtensionLen);
+    uint64_t seqid_extended_pos =
+            seqLib->offsets[s_seqIdx] + (extended_pos - s_seqLowerBound + 1);
+
+    struct coreAlignment *r;
+    for (r = coreAlign; r != NULL; r = r->next)
+    {
+      int r_seqIdx = r->seqIdx;
+      char *r_ident = seqLib->identifiers[r_seqIdx];
+      uint64_t r_seqLowerBound = 0;
+      if (r_seqIdx > 0)
+        r_seqLowerBound = seqLib->boundaries[r_seqIdx - 1];
+
+      if ( strcmp(s_ident, r_ident) == 0 && seqid_extended_pos > seqLib->offsets[r_seqIdx] )
+      {
+        uint64_t pos_in_r = r_seqLowerBound + (seqid_extended_pos - seqLib->offsets[r_seqIdx]);
+
+        if ( r->orient )
+        {
+          if ( pos_in_r >= r->leftSeqPos && pos_in_r <= r->upperSeqBound )
+          {
+            //printf("In seqid=%d, the extended pos maps to %ld and is in between left_core %ld and upperbound %ld\n", r_seqIdx, pos_in_r, r->leftSeqPos, r->upperSeqBound);
+            //printf("Setting upper bound to %ld, was %ld\n", pos_in_r, r->upperSeqBound);
+            r->upperSeqBound = pos_in_r;
+            r->upperSeqBoundFlag = EXT_BOUNDARY;
+          }
+        }else {
+          if ( pos_in_r >= r->lowerSeqBound && pos_in_r <= r->leftSeqPos )
+          {
+            //printf("In seqid=%d, the extended pos maps to %ld and is in between lowerbound %ld and right_core %ld\n", r_seqIdx, pos_in_r, r->lowerSeqBound, r->rightSeqPos);
+            //printf("Setting lower bound to %ld, was %ld\n", pos_in_r, r->lowerSeqBound);
+            r->lowerSeqBound = pos_in_r;
+            r->lowerSeqBoundFlag = EXT_BOUNDARY;
+          }
+        }
+      }
+    } // for r
+  } // for s
+
   masterend = L + l + rightbp;
-  // Returns number of bases extended
+
+  // Extend LEFT second (direction = 0)
   int leftbp = extend_alignment(0, coreAlign, score, seqLib, master,
-                                MAXOFFSET, CAPPENALTY, MINIMPROVEMENT, L, N,
-                                bestbestscore, scoreParams);
+                                BANDWIDTH, CAPPENALTY, MINIMPROVEMENT, L, N,
+                                scoreParams, fp_mat);
   printf("Extended left : %d bp\n", leftbp);
+
   // To get this back to the master index
   masterstart = L - leftbp;
 
@@ -466,7 +504,7 @@ main(int argc, char *argv[])
     if ((x - masterstart) % 80 > 0)
       printf("\n");
 
-    // Now to a file, if requested
+    // Save consensus to a file, if requested
     if (CONS_FILE != NULL)
     {
       if ((fp = fopen(CONS_FILE, "w")) == NULL)
@@ -496,13 +534,12 @@ main(int argc, char *argv[])
       fclose(fp);
     }
 
-
     // Write out TSV and FA files or screen output
     if (OUTTSV_FILE != NULL)
     {
       if ((fp = fopen(OUTTSV_FILE, "w")) == NULL)
       {
-        fprintf(stderr, "Could not open TSV output file %s\n", OUTTSV_FILE);
+        fprintf(stderr, "Could not create the TSV output file %s\n", OUTTSV_FILE);
         exit(1);
       }
     }
@@ -511,7 +548,7 @@ main(int argc, char *argv[])
     {
       if ((fp_fa = fopen(OUTFA_FILE, "w")) == NULL)
       {
-        fprintf(stderr, "Could not open FASTA output file %s\n", OUTFA_FILE);
+        fprintf(stderr, "Could not create the FASTA output file %s\n", OUTFA_FILE);
         exit(1);
       }
     }
@@ -540,15 +577,17 @@ main(int argc, char *argv[])
       }
       seqUpperBound = seqLib->boundaries[seqIdx];
 
-      //
-      //if ( s->leftSeqPos - s->leftExtensionLen < seqLowerBound )
-      //  extended_start = 1;
-      //else
+      // Check if this is a subsequence
+      uint64_t subseq_offset = 0;
+      if ( seqLib->offsets != NULL && seqLib->offsets[seqIdx] > 0 )
+          subseq_offset = seqLib->offsets[seqIdx];
 
       uint64_t extended_start = s->leftSeqPos - s->leftExtensionLen - seqLowerBound + 1;
       uint64_t extended_end =
         (s->rightSeqPos + s->rightExtensionLen) - seqLowerBound + 1;
       char orient = '+';
+      uint64_t core_start = s->leftSeqPos - seqLowerBound + 1 + subseq_offset;
+      uint64_t core_end = s->rightSeqPos - seqLowerBound + 1 + subseq_offset;
       if (s->orient)
       {
         orient = '-';
@@ -556,26 +595,69 @@ main(int argc, char *argv[])
           (s->leftSeqPos + s->leftExtensionLen) - seqLowerBound + 1;
         extended_start =
           (s->rightSeqPos - s->rightExtensionLen) - seqLowerBound + 1;
+        core_start = s->rightSeqPos - seqLowerBound + 1 + subseq_offset;
+        core_end = s->leftSeqPos - seqLowerBound + 1 + subseq_offset;
       }
       int extended_length = extended_end - extended_start + 1;
 
-      printf
-        ("%s\t%ld\t%ld\t%c\tn=%ld,anchor_range=%ld-%ld,extended_left=%d,extended_right=%d,len=%d,score=%d\n",
-         ident, extended_start, extended_end, orient,
-         x, s->leftSeqPos - seqLowerBound + 1,
-         s->rightSeqPos - seqLowerBound + 1, s->leftExtensionLen,
-         s->rightExtensionLen, extended_length, bestbestscore[x]);
+      printf ("%s\t%ld\t%ld\t%c\tn=%ld,anchor_range=%ld-%ld",
+              ident, subseq_offset+extended_start, subseq_offset+extended_end, orient,
+              x, core_start, core_end);
+
+      if ( s->leftExtendable )
+        printf(",extended_left=%d", s->leftExtensionLen);
+      else
+        printf(",extended_left=*");
+
+      if ( s->rightExtendable )
+        printf(",extended_right=%d", s->rightExtensionLen);
+      else
+        printf(",extended_right=*");
+
+      printf(",len=%d,score=%d", extended_length, s->score);
+
+      if ( orient == '+' ) {
+        if ( s->leftExtendable && ((s->leftSeqPos - s->leftExtensionLen) - s->lowerSeqBound) < 20 ) {
+          if ( s->lowerSeqBoundFlag == SEQ_BOUNDARY )
+            printf(",leftSeqLimit");
+          else if ( s->lowerSeqBoundFlag == L_BOUNDARY )
+            printf(",leftExtLimit");
+          else if ( s->lowerSeqBoundFlag == CORE_BOUNDARY )
+            printf(",leftCoreLimit");
+        }
+        if ( s->rightExtendable && (s->upperSeqBound - (s->rightSeqPos + s->rightExtensionLen)) < 20 ) {
+          if ( s->upperSeqBoundFlag == SEQ_BOUNDARY )
+            printf(",rightSeqLimit");
+          else if ( s->upperSeqBoundFlag == L_BOUNDARY )
+            printf(",rightExtLimit");
+          else if ( s->upperSeqBoundFlag == CORE_BOUNDARY )
+            printf(",rightCoreLimit");
+        }
+      }else {
+        if ( s->leftExtendable && (s->upperSeqBound - (s->leftSeqPos + s->leftExtensionLen)) < 20 ) {
+          printf(",leftCoreLimit");
+        }
+        if ( s->rightExtendable && ((s->rightSeqPos - s->rightExtensionLen) - s->lowerSeqBound) < 20 ) {
+          printf(",rightCoreLimit");
+        }
+      }
+      printf("\n");
 
       if (OUTTSV_FILE != NULL)
         fprintf
           (fp,
            "%s\t%ld\t%ld\t%c\tn=%ld,anchor_range=%ld-%ld,extended_left=%d,extended_right=%d,len=%d,score=%d\n",
-           ident, extended_start, extended_end, orient, x,
+           ident, subseq_offset+extended_start, subseq_offset+extended_end, orient, x,
            s->leftSeqPos - seqLowerBound + 1,
            s->rightSeqPos - seqLowerBound + 1, s->leftExtensionLen,
-           s->rightExtensionLen, extended_length, bestbestscore[x]);
+           s->rightExtensionLen, extended_length, s->score);
 
       if (OUTFA_FILE != NULL) {
+        // Sanity checks
+        if ( s->leftExtensionLen < 0 || s->rightExtensionLen < 0 ) {
+          fprintf(stderr, "Error: Negative extension length detected\n");
+          exit(1);
+        }
         uint64_t j;
         uint64_t intStart = s->leftSeqPos - s->leftExtensionLen;
         uint64_t intEnd = s->rightSeqPos + s->rightExtensionLen;
@@ -594,28 +676,38 @@ main(int argc, char *argv[])
           else
             intEnd += flanking;
           fprintf(fp_fa,">%s:%ld-%ld_%c  n=%ld,anchor_range=%ld-%ld,extended_left=%d,extended_right=%d,len=%d,flanking=%d,score=%d\n",
-                     ident, intStart-seqLowerBound+1, intEnd-seqLowerBound+1, orient,
+                     ident, subseq_offset+intStart-seqLowerBound+1, subseq_offset+intEnd-seqLowerBound+1, orient,
                      x, s->leftSeqPos - seqLowerBound + 1,
                      s->rightSeqPos - seqLowerBound + 1, s->leftExtensionLen,
-                     s->rightExtensionLen, extended_length, flanking,bestbestscore[x]);
+                     s->rightExtensionLen, extended_length, flanking, s->score);
         }else{
           fprintf(fp_fa,">%s:%ld-%ld_%c  n=%ld,anchor_range=%ld-%ld,extended_left=%d,extended_right=%d,len=%d,score=%d\n",
-                     ident, intStart-seqLowerBound+1, intEnd-seqLowerBound+1, orient,
+                     ident, subseq_offset+intStart-seqLowerBound+1, subseq_offset+intEnd-seqLowerBound+1, orient,
                      x, s->leftSeqPos - seqLowerBound + 1,
                      s->rightSeqPos - seqLowerBound + 1, s->leftExtensionLen,
-                     s->rightExtensionLen, extended_length, bestbestscore[x]);
+                     s->rightExtensionLen, extended_length, s->score);
         }
+        int seqEmitted = 0;
         if ( orient == '-' ){
           // j is a uint64_t so must be careful with decrements inclusive of zero:
           j = intEnd;
-          do { 
+          do {
             fprintf(fp_fa,"%c",num_to_char(compl(seqLib->sequence[j])));
+            seqEmitted++;
           }while ( j-- > intStart );
         }else{
-          for ( j = intStart; j <= intEnd; j++ )
+          for ( j = intStart; j <= intEnd; j++ ) {
             fprintf(fp_fa,"%c",num_to_char(seqLib->sequence[j]));
+            seqEmitted++;
+          }
         }
         fprintf(fp_fa,"\n");
+        // Sanity check to ensure we do not create any outputs with zero-length.  This
+        // should never happen *and* is problematic for a known issue in rmblastn.
+        if ( seqEmitted == 0 ) {
+          fprintf(stderr, "Error: No sequence emitted for %s:%ld-%ld_%c\n", ident, intStart, intEnd, orient);
+          exit(1);
+        }
       }
 
       x++;
@@ -624,6 +716,8 @@ main(int argc, char *argv[])
       fclose(fp);
     if (OUTFA_FILE != NULL)
       fclose(fp_fa);
+    if (OUTMAT_FILE != NULL)
+      fclose(fp_mat);
 
   }
 
@@ -635,6 +729,7 @@ main(int argc, char *argv[])
 
   return 0;
 }
+
 
 void
 print_parameters()
@@ -648,7 +743,7 @@ print_parameters()
     printf("  Multi-Threaded-Masking (EXPERIMENTAL): num_threads = %d\n",
            num_threads);
   printf("  L %d\n", L);
-  printf("  MAXOFFSET (bandwidth) %d\n", MAXOFFSET);
+  printf("  BANDWIDTH (bandwidth) %d\n", BANDWIDTH);
   printf("  MAXN %d\n", MAXN);
   if (strcmp(MATRIX_FILE, "repeatscout") == 0)
   {
@@ -692,6 +787,7 @@ printCoreAlignmentStruct(struct coreAlignment *coreAlign)
     printf("  rightExtendable  : %d = no\n", coreAlign->rightExtendable);
   printf("  leftExtensionLen : %d bp\n", coreAlign->leftExtensionLen);
   printf("  rightExtensionLen: %d bp\n", coreAlign->rightExtensionLen);
+  printf("  score            : %d\n", coreAlign->score);
   if (coreAlign->orient == 1)
     printf("  orient           : %d = reverse strand\n", coreAlign->orient);
   else
@@ -699,14 +795,14 @@ printCoreAlignmentStruct(struct coreAlignment *coreAlign)
 }
 
 
-// bestbestscore[n] should be renamed
 //  Returns:
 //    The index in master for the end of the consensus extension
 int
 extend_alignment(int direction, struct coreAlignment *coreAlign,
-                 int ****score, struct sequenceLibrary *seqLib, char *master, int MAXOFFSET,
+                 int ****score, struct sequenceLibrary *seqLib, char *master, int BANDWIDTH,
                  int CAPPENALTY, int MINIMPROVEMENT, int L, int N,
-                 int *bestbestscore, struct scoringSystem *scoreParams)
+                 struct scoringSystem *scoreParams,
+                 FILE *pathStringFile)
 {
   int n, offset;
   int row_idx;                  /* The current row/col of the matrix on which
@@ -736,22 +832,38 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
       printf("extend_alignment(left): Called with %d edges\n", N);
   }
 
+  char *pathString = NULL;
+  if ( pathStringFile != NULL ) {
+    pathString = malloc(((BANDWIDTH*2) + 1) * sizeof(char));
+  }
+
+  // Allocate highscore position and score arrays
+  int *overall_sequence_high_score = (int *)malloc(N*sizeof(int));
+  int *overall_sequence_high_score_pos = (int *)malloc(N*sizeof(int));
+  int *trimmed_sequence_high_score = (int *)malloc(N*sizeof(int));
+  int *trimmed_sequence_high_score_pos = (int *)malloc(N*sizeof(int));
+
   //
-  // initialize boundary conditions in score[1][][]
+  // initialize boundary conditions in score[1][][] and
+  // sequence score/position arrays
   //
   for (n = 0; n < N; n++)
   {
-    for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
+    overall_sequence_high_score[n] = 0;
+    overall_sequence_high_score_pos[n] = 0;
+    trimmed_sequence_high_score[n] = 0;
+    trimmed_sequence_high_score_pos[n] = 0;
+    for (offset = -BANDWIDTH; offset <= BANDWIDTH; offset++)
     {
       // Affine GAP penalties
       if (offset < 0)
       {
         // orig
-        score[1][n][offset + MAXOFFSET][1] = 0;
-        score[1][n][offset + MAXOFFSET][1] +=
+        score[1][n][offset + BANDWIDTH][1] = 0;
+        score[1][n][offset + BANDWIDTH][1] +=
           ((-offset) * scoreParams->gapextn) + scoreParams->gapopen;
-        score[1][n][offset + MAXOFFSET][0] = 0;
-        score[1][n][offset + MAXOFFSET][0] +=
+        score[1][n][offset + BANDWIDTH][0] = 0;
+        score[1][n][offset + BANDWIDTH][0] +=
           ((-offset) * scoreParams->gapextn) + scoreParams->gapopen;
       }
       else
@@ -759,31 +871,31 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
         if (offset > 0)
         {
           // orig
-          score[1][n][offset + MAXOFFSET][1] = 0;
-          score[1][n][offset + MAXOFFSET][1] +=
+          score[1][n][offset + BANDWIDTH][1] = 0;
+          score[1][n][offset + BANDWIDTH][1] +=
             ((offset) * scoreParams->gapextn) + scoreParams->gapopen;
-          score[1][n][offset + MAXOFFSET][0] = 0;
-          score[1][n][offset + MAXOFFSET][0] +=
+          score[1][n][offset + BANDWIDTH][0] = 0;
+          score[1][n][offset + BANDWIDTH][0] +=
             ((offset) * scoreParams->gapextn) + scoreParams->gapopen;
         }
         else
         {
-          score[1][n][offset + MAXOFFSET][0] = 0;
-          score[1][n][offset + MAXOFFSET][1] = 0;
+          score[1][n][offset + BANDWIDTH][0] = 0;
+          score[1][n][offset + BANDWIDTH][1] = 0;
         }
       }
     }
-    bestbestscore[n] = 0;
+    overall_sequence_high_score[n] = 0;
 
-    if (VERBOSE >= 10)
+    if (VERBOSE >= 12)
     {
       printf("SW Matrix Boundary Conditions ( n = %d ):\n", n);
       printf("  GAP: ");
-      for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-        printf(" %d", score[1][n][offset + MAXOFFSET][1]);
+      for (offset = -BANDWIDTH; offset <= BANDWIDTH; offset++)
+        printf(" %d", score[1][n][offset + BANDWIDTH][1]);
       printf("\n  SUB: ");
-      for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-        printf(" %d", score[1][n][offset + MAXOFFSET][0]);
+      for (offset = -BANDWIDTH; offset <= BANDWIDTH; offset++)
+        printf(" %d", score[1][n][offset + BANDWIDTH][0]);
       printf("\n");
     }
   }
@@ -813,52 +925,52 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
         if ((direction && currCore->rightExtendable) ||
             (!direction && currCore->leftExtendable))
         {
-          // Sequence boundaries:
-          //   boundaries[] contains the start position for each sequence. 
-          //   Therefore the range of the sequence is
-          //   boundaries[i] to boundaries[i+1]-1 inclusive.
-          lower_seq_bound = 0;
-          if ( currCore->seqIdx > 0 )
-             lower_seq_bound = seqLib->boundaries[currCore->seqIdx - 1];
-          upper_seq_bound = seqLib->boundaries[currCore->seqIdx] - 1;
+          // Use boundaries defined in the core datastructure.  These may
+          // now be hard or soft boundaries.
+          lower_seq_bound = currCore->lowerSeqBound;
+          upper_seq_bound = currCore->upperSeqBound;
 
-          if (VERBOSE >= 10){
+          if (VERBOSE >= 10)
+          {
             if ( direction )
               printf("RIGHT ROW %d with '%c': n = %d\n", row_idx, num_to_char(a), n);
             else
               printf("LEFT ROW %d with '%c': n = %d\n", row_idx, num_to_char(a), n);
           }
 
+          // Compute a row of the banded DP matrix under a given consensus
+          // hypothesis ("a").
           curr_row_best_score = compute_nw_row(direction, row_idx, n, a, currCore,
-                                                      score, lower_seq_bound,
-                                                      upper_seq_bound,
-                                                      seqLib->sequence,
-                                                      &curr_row_best_col_idx,
-                                                      scoreParams, MAXOFFSET, L, VERBOSE);
-
+                                               score, lower_seq_bound,
+                                               upper_seq_bound,
+                                               seqLib->sequence,
+                                               &curr_row_best_col_idx,
+                                               scoreParams, BANDWIDTH, L, VERBOSE, NULL);
 
           if (VERBOSE >= 12)
           {
             printf("    Gap: ");
-            for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-              printf(" %d", score[row_idx % 2][n][offset + MAXOFFSET][1]);
+            for (offset = -BANDWIDTH; offset <= BANDWIDTH; offset++)
+              printf(" %d", score[row_idx % 2][n][offset + BANDWIDTH][1]);
             printf("\n");
             printf("    Sub: ");
-            for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-              printf(" %d", score[row_idx % 2][n][offset + MAXOFFSET][0]);
+            for (offset = -BANDWIDTH; offset <= BANDWIDTH; offset++)
+              printf(" %d", score[row_idx % 2][n][offset + BANDWIDTH][0]);
             printf("\n");
           }
 
-          if (VERBOSE >= 10) {
+          if (VERBOSE >= 10)
+          {
             printf("  best score = %d @ column %d, prev best score = %d",
                    curr_row_best_score, curr_row_best_col_idx,
-                   bestbestscore[n]);
+                   overall_sequence_high_score[n]);
+            // RMH: TODO...is this the best/only way to determine that a sequence has hit a limit?
             if (  ( direction && score[row_idx % 2][n][0][1] < -279000 ) ||
-                  ( !direction && score[row_idx % 2][n][MAXOFFSET+MAXOFFSET][1] < -279000 ))
+                  ( !direction && score[row_idx % 2][n][BANDWIDTH+BANDWIDTH][1] < -279000 ))
               printf(" **OUT_OF_SEQ**");
           }
 
-          if ((curr_row_best_score - bestbestscore[n]) > CAPPENALTY)
+          if ((curr_row_best_score - overall_sequence_high_score[n]) > CAPPENALTY)
           {
             score_given_cons += curr_row_best_score;
           }
@@ -866,8 +978,8 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
           {
             if (VERBOSE >= 10)
               printf(" **CAPPED** contributing = %d",
-                     (bestbestscore[n] + CAPPENALTY));
-            score_given_cons += bestbestscore[n] + CAPPENALTY;
+                     (overall_sequence_high_score[n] + CAPPENALTY));
+            score_given_cons += overall_sequence_high_score[n] + CAPPENALTY;
           }
           if (VERBOSE >= 10)
             printf("\n");
@@ -887,18 +999,20 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
         besta = a;
       }
     }   // for (a=0...
-    if (VERBOSE >= 10)
-      printf("ROW %d complete, '%c' chosen as the consensus\n", row_idx,
-             num_to_char(besta));
 
-    // TODO....drop the use of a contiguous master
+    if (VERBOSE >= 10)
+      printf("ROW %d complete, '%c' chosen as the consensus. curr_ext_score = %d\n", row_idx,
+             num_to_char(besta), curr_extension_score);
+
     if (direction)
       master[L + l + row_idx] = besta;
     else
       master[L - row_idx - 1] = besta;
 
-    // Now reset the row scores for besta unless besta == 3 (T) since this
-    // is what the rows scores currently represent.
+    // Now recalculate scores for the chosen consensus base (besta).  NOTE
+    // this is strictly not necessary for besta='T' as that was the last
+    // one calculated above.  However to keep the code simple, we will simply
+    // recalculate it here.
     int totalExtendable = 0;
     int numOutOfSeq = 0;
     int numHighScore = 0;
@@ -908,39 +1022,45 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
       if ((direction && currCore->rightExtendable) ||
           (!direction && currCore->leftExtendable))
       {
+        // Use boundaries defined in the core datastructure.  These may
+        // now be hard or soft boundaries.
+        lower_seq_bound = currCore->lowerSeqBound;
+        upper_seq_bound = currCore->upperSeqBound;
 
-        // Sequence boundaries:
-        lower_seq_bound = 0;
-        if ( currCore->seqIdx > 0 )
-           lower_seq_bound = seqLib->boundaries[currCore->seqIdx - 1];
-        upper_seq_bound = seqLib->boundaries[currCore->seqIdx] - 1;
-        // Rebuild the matrix row based on the new consensus call
+        // Rebuild the DP matrix row based on the new consensus call ('besta').
         curr_row_best_score =
             compute_nw_row(direction, row_idx, n, besta, currCore, score,
                                lower_seq_bound, upper_seq_bound, seqLib->sequence,
                                &curr_row_best_col_idx,
-                               scoreParams, MAXOFFSET, L, VERBOSE);
+                               scoreParams, BANDWIDTH, L, 0, pathString);
+
+        // Optional, save matrix path to file for debugging
+        if ( pathString ) {
+          pathString[BANDWIDTH*2] = '\0';
+          if ( direction == 1 )
+            fprintf(pathStringFile, "dir=right");
+          else
+            fprintf(pathStringFile, "dir=left");
+          fprintf(pathStringFile, ":n=%d:row=%d: %s best:score=%d:offset=%d:cons=%c\n",
+                  n, row_idx, pathString, curr_row_best_score,
+                  curr_row_best_col_idx-row_idx+BANDWIDTH, num_to_char(besta));
+        }
 
         // How many have run out of sequence?
         if ( (! direction && score[row_idx % 2][n][0][1] < -279000  ) ||
-             (direction && score[row_idx % 2][n][MAXOFFSET+MAXOFFSET][1] < -279000 ))
+             (direction && score[row_idx % 2][n][BANDWIDTH+BANDWIDTH][1] < -279000 ))
           numOutOfSeq++;
 
         // Record setters
-        if (curr_row_best_score > bestbestscore[n])
+        if (curr_row_best_score > overall_sequence_high_score[n])
         {
-          // TODO: have generic pre-allocated array passed in
-          //Experimental - extra conditional to not allow the LEN to increase unless the whole thing does
-          //  The purpose is to not allow increasing score of an individual alignment ( by chance ) to go
-          //  beyond the collective extension.
-          if ((curr_extension_score >= max_extension_score + (abs(max_extension_score_row_idx - row_idx) * MINIMPROVEMENT)))
-          {
-            if (direction)
-              currCore->rightExtensionLen = curr_row_best_col_idx;
-            else
-              currCore->leftExtensionLen = curr_row_best_col_idx;
-          }
-          bestbestscore[n] = curr_row_best_score;
+          //  The current sequence has a higher score than its previous best.
+          //  Save this value, even if the overall msa no longer meets the
+          //  MINIMPROVEMENT criteria.  Should it start to meet the criteria
+          //  again, we can simply grab these values and store them in the
+          //  trimmed_sequence_high_score/pos arrays.
+          overall_sequence_high_score[n] = curr_row_best_score;
+          overall_sequence_high_score_pos[n] = curr_row_best_col_idx;
           numHighScore++;
         }
         totalExtendable++;
@@ -972,10 +1092,16 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
          max_extension_score +
          (abs(max_extension_score_row_idx - row_idx) * MINIMPROVEMENT)))
     {
-      if (VERBOSE >= 10)
+      if ( VERBOSE >= 10)
         printf("                     **This row is now the new max**\n");
       max_extension_score_row_idx = row_idx;
       max_extension_score = curr_extension_score;
+      int nn;
+      for (nn = 0; nn < N; nn++)
+      {
+        trimmed_sequence_high_score[nn] = overall_sequence_high_score[nn];
+        trimmed_sequence_high_score_pos[nn] = overall_sequence_high_score_pos[nn];
+      }
     }
     else
     {
@@ -1001,257 +1127,29 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
        printf("WARNING: Extended sequence left to the limit ( L=%d ).\n", L);
   }
 
+  // Update the core extensionLen and score fields.
+  n=0;
+  for (currCore = coreAlign; currCore != NULL && n < N; currCore = currCore->next)
+  {
+    if ( trimmed_sequence_high_score[n] > 0 )
+    {
+    if (direction)
+      currCore->rightExtensionLen = trimmed_sequence_high_score_pos[n] + 1;
+    else
+      currCore->leftExtensionLen = trimmed_sequence_high_score_pos[n] + 1;
+    currCore->score += trimmed_sequence_high_score[n];
+    }
+    n++;
+  }
+
+  // Release memory
+  free(overall_sequence_high_score);
+  free(overall_sequence_high_score_pos);
+  free(trimmed_sequence_high_score);
+  free(trimmed_sequence_high_score_pos);
+  free( pathString );
+
   // Return the total number of extended consensus bases
   return max_extension_score_row_idx + 1;
-}
-
-
-// Unit test for compute_nw_row() function
-void
-test_compute_nw_row()
-{
-  int x, n, r;
-  int offset;
-  int conspos;
-  int bestscore;
-  struct sequenceLibrary l_seqLib;
-  struct sequenceLibrary r_seqLib;
-  int max_score_seq_idx = 0;
-  int ****l_score; // 2 * MAXN * (2*MAXOFFSET+1) * 2
-  int ****r_score; // 2 * MAXN * (2*MAXOFFSET+1) * 2
-  // score[2] : two SW rows per lmer/anchor
-  l_score = (int ****) malloc(2 * sizeof(*l_score));
-  r_score = (int ****) malloc(2 * sizeof(*r_score));
-  for (x = 0; x < 2; x++)
-  {
-    // score[2][5] : up to 5 lmers/anchors
-    l_score[x] = (int ***) malloc(5 * sizeof(*l_score[x]));
-    r_score[x] = (int ***) malloc(5 * sizeof(*r_score[x]));
-    for (n = 0; n < MAXN; n++)
-    {
-      // score[2][5][2*MAXOFFSET+1] : Row length = 2*bandwidth+1
-      l_score[x][n] =
-        (int **) malloc((2 * MAXOFFSET + 1) * sizeof(*l_score[x][n]));
-      r_score[x][n] =
-        (int **) malloc((2 * MAXOFFSET + 1) * sizeof(*r_score[x][n]));
-      for (r = 0; r < (2 * MAXOFFSET + 1); r++)
-      {
-        // score[2][5][2*MAXOFFSET+1][2] : Gap/Sub row per SW row
-        l_score[x][n][r] = (int *) malloc(2 * sizeof(*l_score[x][n][r]));
-        r_score[x][n][r] = (int *) malloc(2 * sizeof(*r_score[x][n][r]));
-      }
-    }
-  }
-
-  // Boundary conditions are stored in score[1][][][]
-  // as first row ( w=0 ), and subsequent rows are stored
-  // in: score[w%2][][][]
-  for (n = 0; n < 3; n++)
-  {
-    for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-    {
-      if (offset < 0)
-      {
-        l_score[1][n][offset + MAXOFFSET][1] =
-          ((-offset) * scoreParams->gapextn) + scoreParams->gapopen;
-        l_score[1][n][offset + MAXOFFSET][0] =
-          ((-offset) * scoreParams->gapextn) + scoreParams->gapopen;
-        r_score[1][n][offset + MAXOFFSET][1] =
-          ((-offset) * scoreParams->gapextn) + scoreParams->gapopen;
-        r_score[1][n][offset + MAXOFFSET][0] =
-          ((-offset) * scoreParams->gapextn) + scoreParams->gapopen;
-      }
-      else
-      {
-        if (offset > 0)
-        {
-          l_score[1][n][offset + MAXOFFSET][1] =
-            ((offset) * scoreParams->gapextn) + scoreParams->gapopen;
-          l_score[1][n][offset + MAXOFFSET][0] =
-            ((offset) * scoreParams->gapextn) + scoreParams->gapopen;
-          r_score[1][n][offset + MAXOFFSET][1] =
-            ((offset) * scoreParams->gapextn) + scoreParams->gapopen;
-          r_score[1][n][offset + MAXOFFSET][0] =
-            ((offset) * scoreParams->gapextn) + scoreParams->gapopen;
-        }
-        else
-        {
-          l_score[1][n][offset + MAXOFFSET][0] = 0;
-          l_score[1][n][offset + MAXOFFSET][1] = 0;
-          r_score[1][n][offset + MAXOFFSET][0] = 0;
-          r_score[1][n][offset + MAXOFFSET][1] = 0;
-        }
-      }
-    }
-  }
-
-  l_seqLib.boundaries = (uint64_t *) malloc(4 * sizeof(uint64_t));
-  l_seqLib.boundaries[0] = 16;
-  l_seqLib.boundaries[1] = 32;
-  l_seqLib.boundaries[2] = 48;
-  l_seqLib.boundaries[3] = 0;
-  uint64_t lower_bound[] = { 0, 16, 32 };
-  uint64_t upper_bound[] = { 16, 32, 48 };
-  char *predef_id[] = { "seq1", "seq2", "seq3" };
-  l_seqLib.identifiers = predef_id;
-  l_seqLib.count = 3;
-  l_seqLib.length = 48;
-  /*
-   * n=0  seq1:         9 :   11:+  NACCTGAATC [           T            ] AGGAC*
-   * n=0  seq2:        25 :   27:+  GACGTGAATC [           T            ] AGGAC*
-   * n=0  seq3:        41 :   43:+  TTGATGAATG [           T            ] AGGAC*
-   *
-   * 0-3 = ACGT and N = 99
-   *
-   * LEFT Extension Example1
-   *
-   *                      row=0  *  *  *  *  *  *  *  *  *  *  *
-   *                 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
-   *                 G  C  A  A  T  G  C  T  G  A  A  T  C  t  a  g */
-  char p_left[] = {  2, 1, 0, 0, 3, 2, 1, 3, 2, 0, 0, 3, 1, 3, 0, 2,
-    /*              16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
-     *               c  t  a  G  A  T  T  C  A  G  C  A  T  T  G  N*/
-                     1, 3, 0, 2, 0, 3, 3, 1, 0, 2, 1, 0, 3, 3, 2, 99,
-    /*              32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47
-     *               G  C  T  G  A  C  C  T  C  A  A  T  G  t  a  g */
-                     2, 1, 3, 2, 0, 1, 1, 3, 1, 0, 0, 3, 2, 3, 0, 2
-  };
-  //                   C  T  A  A  C  T  C  C  A  G  T  C  G  T  A  A  C  G  G
-  char cons_base[] = { 1, 3, 0, 0, 1, 3, 1, 1, 0, 2, 3, 1, 2, 3, 0, 0, 1, 2, 2 };
-  l_seqLib.sequence = p_left;
-
-  // NextPtr, seqID, leftSeqPos, rightSeqPos,
-  //    leftExtendable, rightExtendable, llen, rlen, orient
-  struct coreAlignment l_coreAlign_0 = { NULL, 0, 12, 14, 1, 1, 0, 0, 0 };
-  struct coreAlignment l_coreAlign_1 = { NULL, 1, 16, 18, 1, 1, 0, 0, 1 };
-  struct coreAlignment l_coreAlign_2 = { NULL, 2, 44, 46, 1, 1, 0, 0, 0 };
-  struct coreAlignment *l_cores[] = { &l_coreAlign_0, &l_coreAlign_1, &l_coreAlign_2 };
-
-  /* RIGHT Extension Example1-reciprocal
-   *                  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
-   *                  g  a  t  C  T  A  A  G  T  C  G  T  A  A  C  G*/
-  char p_right[] = {  2, 0, 3, 1, 3, 0, 0, 2, 3, 1, 2, 3, 0, 0, 1, 2,
-    /*               16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
-     *                N  G  T  T  A  C  G  A  C  T  T  A  G  a  t  c */
-                     99, 2, 3, 3, 0, 1, 2, 0, 1, 3, 3, 0, 2, 0, 3, 1,
-    /*               32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47
-     *                g  a  t  G  T  A  A  C  T  C  C  A  G  T  C  G */
-                      2, 0, 3, 2, 3, 0, 0, 1, 3, 1, 1, 0, 2, 3, 1, 2
-  };
-  // NextPtr, seqID, leftSeqPos, rightSeqPos,
-  //    leftExtendable, rightExtendable, llen, rlen, orient
-  struct coreAlignment r_coreAlign_0 = { NULL, 0, 1, 3, 1, 1, 0, 0, 0 };
-  struct coreAlignment r_coreAlign_1 = { NULL, 1, 29, 31, 1, 1, 0, 0, 1 };
-  struct coreAlignment r_coreAlign_2 = { NULL, 2, 33, 35, 1, 1, 0, 0, 0 };
-  struct coreAlignment *r_cores[] = { &r_coreAlign_0, &r_coreAlign_1, &r_coreAlign_2 };
-
-  r_seqLib.boundaries = (uint64_t *) malloc(4 * sizeof(uint64_t));
-  r_seqLib.boundaries[0] = 16;
-  r_seqLib.boundaries[1] = 32;
-  r_seqLib.boundaries[2] = 48;
-  r_seqLib.boundaries[3] = 0;
-  r_seqLib.identifiers = predef_id;
-  r_seqLib.sequence = p_right;
-  r_seqLib.count = 3;
-  r_seqLib.length = 48;
- 
-
-  if ( VERBOSE > 10 ) {
-  printf("Boundary Conditions\n");
-  printf("  Gap: ");
-  for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-    printf(" %d", l_score[1][0][offset + MAXOFFSET][1]);
-  printf("\n");
-  printf("  Sub: ");
-  for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-    printf(" %d", l_score[1][0][offset + MAXOFFSET][0]);
-  printf("\n\n");
-  }
-
-  int bad = 0;
-  int final_right_gap[] = { -35, -29, -15, -1, -6, -11, -2, -7, -12, -17, -22 };
-  int final_right_sub[] = { -33, -1, -41, -27, -11, 31, -8, -6, -7, -32, -43 };
-  for ( n = 0; n < 3; n++ )
-  {
-    printf("n = %d\n", n);
-    printf("Cores Left/Right reciprocal:\n");
-    printCoreEdges(l_cores[n], &l_seqLib, 0);
-    printCoreEdges(r_cores[n], &r_seqLib, 0);
-    for (conspos = 0; conspos < 19; conspos++)
-    {
-      if ( VERBOSE > 10 )
-        printf("row: %d,  cons_base=%d:\n", conspos, cons_base[conspos]);
-
-      // Calculate from right to left
-      bestscore =
-        compute_nw_row(1,conspos, n, cons_base[conspos], r_cores[n], r_score,
-                           lower_bound[n], upper_bound[n]-1, p_right,
-                           &max_score_seq_idx, scoreParams,
-                           MAXOFFSET, L, VERBOSE);
-      if ( VERBOSE > 10 ) {
-      printf("  RIGHT: bestscore = %d\n", bestscore);
-      printf("         Gap: ");
-      for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-        printf(" %d", r_score[conspos % 2][n][offset + MAXOFFSET][1]);
-      printf("\n");
-      printf("         Sub: ");
-      for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-        printf(" %d", r_score[(conspos) % 2][n][offset + MAXOFFSET][0]);
-      printf("\n");
-      }
-
-      bestscore =
-        compute_nw_row(0,conspos, n, cons_base[conspos], l_cores[n], l_score,
-                           lower_bound[n], upper_bound[n]-1, p_left,
-                           &max_score_seq_idx, scoreParams,
-                           MAXOFFSET, L, VERBOSE);
-
-      if ( VERBOSE > 10 ){
-      printf("  LEFT: bestscore = %d\n", bestscore);
-      printf("         Gap: ");
-      for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-        printf(" %d", l_score[conspos % 2][n][offset + MAXOFFSET][1]);
-      printf("\n");
-      printf("         Sub: ");
-      for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-        printf(" %d", l_score[(conspos) % 2][n][offset + MAXOFFSET][0]);
-      printf("\n");
-      }
-
-      for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-//        if ( ( l_score[conspos % 2][n][offset + MAXOFFSET][0] !=
-//               r_score[conspos % 2][n][MAXOFFSET-offset][0] ) ||
-//             ( l_score[conspos % 2][n][offset + MAXOFFSET][1] !=
-//               r_score[conspos % 2][n][MAXOFFSET-offset][1] ) )
-        if ( ( l_score[conspos % 2][n][MAXOFFSET-offset][0] !=
-               r_score[conspos % 2][n][MAXOFFSET-offset][0] ) ||
-             ( l_score[conspos % 2][n][MAXOFFSET-offset][1] !=
-               r_score[conspos % 2][n][MAXOFFSET-offset][1] ) )
-      {
-        bad = 1;
-        printf("Failed reciprocal test row=%d\n", n);
-      }
-      if ( n == 0 && conspos == 5 ) {
-        for (offset = -MAXOFFSET; offset <= MAXOFFSET; offset++)
-          if ( ( r_score[3%2][0][offset + MAXOFFSET][1] !=
-             final_right_gap[offset+MAXOFFSET] ) ||
-           ( r_score[3%2][0][offset + MAXOFFSET][0] !=
-             final_right_sub[offset+MAXOFFSET] ) )
-          {
-            bad = 1;
-            printf("Failed final comparison at %d\n", offset+MAXOFFSET);
-          }
-      }
-    }
-  }
-
-  if (!bad)
-  {
-    printf("All tests passed!\n");
-    exit(0);
-  }else {
-    exit(1);
-  }
-
 }
 

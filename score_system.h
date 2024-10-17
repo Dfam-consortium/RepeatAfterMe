@@ -1,6 +1,9 @@
 #ifndef __SCORE_SYSTEM_H__
 #define __SCORE_SYSTEM_H__
 
+//
+// Structures
+//
 struct scoringSystem
 {
     char *name;               // Matrix name
@@ -14,6 +17,9 @@ struct scoringSystem
 };
 
 
+//
+// Prototypes
+//
 double
 calculateLambda( struct scoringSystem *scoringSys );
 
@@ -27,5 +33,7 @@ getRepeatScoutMatrix(int match, int mismatch, int gap);
 
 struct scoringSystem *
 getMatrix(char *matrixName);
+
+void score_system_test();
 
 #endif
