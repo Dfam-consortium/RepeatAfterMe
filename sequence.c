@@ -741,6 +741,9 @@ loadSequenceSubsetMinimal(char *twoBitName, char *rangeBEDName,
         }
       }
     }
+
+    // Suppress the set but unused warning:
+    (void)upper_flank_len;
     //printf("Setting flanking for %d to %d [%d] - %d [%d]\n", seq_idx, lower_flank_len, lower_bound_flag, upper_flank_len, upper_bound_flag);
 
     // Extract subsequence + flanking:
