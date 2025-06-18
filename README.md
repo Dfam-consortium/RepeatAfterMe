@@ -76,19 +76,19 @@ For example:
     ## extend-stk.pl
     ##
     ##   Program Version      : 0.2
-    ##   RAMExtend Version    : 0.0.6-dev
+    ##   RAMExtend Version    : 0.0.6
     ##   RepeatModeler Version: 2.0.6
-    ##   Genome               : ce10.2bit
-    ##   Input                : ce10-fam1.stk
-    ##   Output               : /dev/null
-    ##   Min Aligning Seqs    : 5
+    ##   Genome               : test/ce10.2bit
+    ##   Input                : test/ce10-fam1.stk
+    ##   Output               : ce10-fam1-extended.stk
+    ##   Min Aligning Seqs    : 3
     ##
     Working on rnd-1_family-45..
-      - Temporary directory: /u3/home/rhubley/notebooks/2024/1004-repeat_after_me_satellites/RepeatAfterMe-dev/test/CYmEAyYOQt
+      - Temporary directory: /u3/home/rhubley/projects/RepeatAfterMe-public/FDLO9azqC5
       - Consensus length [recalculated]: 163
       - Kimura divergence: 15.16 % (no CpG adjustment)
       - Instances: 100
-      - Running RAMExtend [bandwidth=40, matrix=14p43g, minimprovement=50]..
+      - Running RAMExtend [bandwidth=40, matrix=14p43g, minimprovement=30]..
         - Estimated extensions: left 354 bp, right 86 bp, total 440
       - Rebuilding MSA with extensions...
         - Final consensus length = 603 [ 440 bp change ]
