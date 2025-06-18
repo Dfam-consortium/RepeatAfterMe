@@ -146,37 +146,46 @@ usage()
           "     -addflanking <num>    # Include an additional<num> bp of sequence to each sequence\n"
           "                           #   when using the -outfa option.\n"
           "     -L <num>              # Size of region to extend left or right (10000). \n"
-          "     -matrix 14p43g |      # There are several internally-coded matrices available.\n"
-          "             18p43g |      #   The original RepeatScout scoring system is 'repeatscout'\n"
-          "             20p43g |      #   and encodes a simple +1/-1 substitution matrix with a single\n"
-          "             25p43g |      #   gap penalty.  The other choices are encodings of the\n"
-          "             repeatscout   #   RepeatMasker matrices specified by divergence and GC\n"
-          "                           #   background as '<divergence>p<GC>g' ( eg. 20p43g\n"
-          "                           #   is tuned for 20%% divergence in a 43%% GC background ).\n"
-          "                           #   Each matrix has it's own default gap_open, gap_extension\n"
-          "                           #   parameters.  These may be overrided by using the -gapopen\n"
-          "                           #   and -gapextn options.\n"
-          "     -match <num>          # Reward for a match (+1: original scoring system only)  \n"
-          "     -mismatch <num>       # Penalty for a mismatch (-1: original scoring system only) \n"
-          "     -gap <num>            # Penalty for a gap (-5: original scoring system only)\n"
-          " or\n"
-          "     -gapopen <num>        # Gap open penalty (-28: nucleotide scoring matrix only)\n"
-          "     -gapextn <num>        # Gap extension penalty (-6: nucleotide scoring matrix only)\n"
+          "     -minimprovement <num> # Amount that a the alignment score needs to improve each step\n"
+          "                           #   to be considered progress (original: 3, nucleotide matrix: 27).\n"
+          "     -maxoccurrences <num> # Cap on the number of sequences to align (10,000). \n"
+          "     -cappenalty <num>     # Cap on penalty for exiting alignment of a sequence \n"
+          "                           #   (original: -20, nucleotide matrix:-90).\n"
+          "     -stopafter <num>      # Stop the alignment after this number of no-progress columns (100).\n"
+          "     -minlength <num>      # Minimum required length for a sequence to be reported (50).\n"
+          "     -outmat <file>        # Dump the dp matrix paths to a file for debugging.\n"
+          "     -v[v[v[v]]]           # How verbose do you want it to be?  -vvvv is super-verbose.\n"
           "\n"
-          "     -minimprovement <num> # Amount that a the alignment needs to improve each step\n"
-          "                           #   to be considered progress (original: 3, nucleotide matrix: 27)\n"
+          "   New Scoring System Options:\n"
+          "     -matrix 14p43g |      # There are several internally-coded matrices available.\n"
+          "             18p43g |      #   The DNA substitution matrices are borrowed from RepeatMasker\n"
+          "             20p43g |      #   and are tuned for a 43%% GC background.  The four encoded\n"
+          "             25p43g        #   matrices are are divergence tuned, ranging from 14%% to 25%%.\n"
+          "                           #   For example the '14p43g' matrix is tuned for 14%% divergence\n"
+          "                           #   43%% GC background.  Each matrix has it's own default gap_open,\n"
+          "                           #   gap_extension parameters.  These may be overrided by using the\n"
+          "                           #   -gapopen and -gapextn options.\n"
+          "     -gapopen <num>        # Affine gap open penalty to override per-matrix default\n"
+          "     -gapextn <num>        # Affine gap extension penalty to override per-matrix default\n"
+          "\n"
           "     -bandwidth <num>      # The maximum number of unbalanced gaps allowed (14)\n"
           "                           #   Half the bandwidth of the banded Smith-Waterman\n"
           "                           #   algorithm.  The default allows for at most 14bp\n"
           "                           #   of unbalanced insertions/deletions in any aligned\n"
           "                           #   sequence.  The full bandwidth is 2*bandwidth+1.\n"
-          "     -maxoccurrences <num> # Cap on the number of sequences to align (10,000) \n"
-          "     -cappenalty <num>     # Cap on penalty for exiting alignment of a sequence \n"
-          "                           #   (original: -20, nucleotide matrix:-90)\n"
-          "     -stopafter <num>      # Stop the alignment after this number of no-progress columns (100)\n"
-          "     -minlength <num>      # Minimum required length for a sequence to be reported (50)\n"
-          "     -outmat <file>        # Dump the dp matrix paths to a file for debugging\n"
-          "     -v[v[v[v]]]           # How verbose do you want it to be?  -vvvv is super-verbose\n"
+          " or\n"
+          "   Original RepeatScout Scoring System:\n"
+          "     -matrix repeatscout   # The original RepeatScout scoring system is enabled if this\n"
+          "                           #   option is set.  This uses a simple match/mismatch penalty\n"
+          "                           #   and a linear gap model.  The original RepeatScout values\n"
+          "                           #   for these parameters may be overriden with the following\n"
+          "                           #   additional options:\n"
+          "     -match <num>          # If '-matrix repeatscout' used, apply this reward for match\n"
+          "                           #   (default +1)  \n"
+          "     -mismatch <num>       # If '-matrix repeatscout' used, apply this penalty for a mismatch\n"
+          "                           #   (default: -1) \n"
+          "     -gap <num>            # If '-matrix repeatscout' used, apply this penalty for a gap\n"
+          "                           #   (default: -5)\n"
           "\n"
           "Ranges:\n\n"
           "   Ranges are supplied in the form of a modified BED-6 format:\n\n"
@@ -346,14 +355,12 @@ main(int argc, char *argv[])
   if (co_get_string(argc, argv, "-twobit", &SEQUENCE_FILE))
   {
     dnaUtilOpen();
-    //seqLib = loadSequenceSubset(SEQUENCE_FILE, RANGES_FILE,
-    //                            &coreAlign, &N);
-    //
-    // This was a mistake....this should be L not L*2!
-    //seqLib = loadSequenceSubsetMinimal(SEQUENCE_FILE, RANGES_FILE,
-    //                                    &coreAlign, &N, L*2 );
+    // Load the cores and flanking sequence sufficient to
+    // support extension by L+bandwidth ( assuming at most
+    // bandwidth insertions that would be tolerated before the
+    // alignment is terminated).
     seqLib = loadSequenceSubsetMinimal(SEQUENCE_FILE, RANGES_FILE,
-                                        &coreAlign, &N, L );
+                                        &coreAlign, &N, L+BANDWIDTH );
 
   }
   else if (co_get_string(argc, argv, "-sequence", &SEQUENCE_FILE))
@@ -404,12 +411,30 @@ main(int argc, char *argv[])
   // NOTE: At this stage the coreAlign->score fields are initialized to
   // zero.
 
+  //
   // Extend RIGHT first (direction = 1)
+  //
   int rightbp = extend_alignment(1, coreAlign, score, seqLib, master,
                                  BANDWIDTH, CAPPENALTY, MINIMPROVEMENT, L, N,
                                  scoreParams, fp_mat);
   printf("Extended right: %d bp\n", rightbp);
 
+  // Update the bounds of the core sequences should they overlap one
+  // of these right extensions.
+  //
+  //  e.g
+  //                        1          2           3
+  //              123456789 012 345678901234 567 890123456
+  //    seq1:     ATTAGCTGT[ata]ACGTATTTCGGT[ata]ACGTAGGTA
+  //
+  // right extension (with "|" denoting existing bounds):
+  //                            >>>>>>>     |    >>>>>    |
+  //    seq1:     ATTAGCTGT[ata]ACGTATTTCGGT[tat]ACGTAGGTA
+  //
+  // update bounds for left extension:
+  //             |       <<           |   <<
+  //    seq1:     ATTAGCTGT[ata]ACGTATTTCGGT[tat]ACGTAGGTA
+  //
   struct coreAlignment *s;
   for (s = coreAlign; s != NULL; s = s->next)
   {
@@ -419,11 +444,15 @@ main(int argc, char *argv[])
     if (s_seqIdx > 0)
       s_seqLowerBound = seqLib->boundaries[s_seqIdx - 1];
 
+    // The position relative the core sequence
     uint64_t extended_pos = (s->rightSeqPos + s->rightExtensionLen);
     if (s->orient)
       extended_pos = (s->rightSeqPos - s->rightExtensionLen);
+    // The aboslute position in the seq_id
     uint64_t seqid_extended_pos =
             seqLib->offsets[s_seqIdx] + (extended_pos - s_seqLowerBound + 1);
+
+    //printf("EXT: s_idx = %d right_ext_len = %d to position %ld\n", s_seqIdx, s->rightExtensionLen, seqid_extended_pos);
 
     struct coreAlignment *r;
     for (r = coreAlign; r != NULL; r = r->next)
@@ -444,6 +473,7 @@ main(int argc, char *argv[])
           {
             //printf("In seqid=%d, the extended pos maps to %ld and is in between left_core %ld and upperbound %ld\n", r_seqIdx, pos_in_r, r->leftSeqPos, r->upperSeqBound);
             //printf("Setting upper bound to %ld, was %ld\n", pos_in_r, r->upperSeqBound);
+            printf("OVERLAP AVOIDANCE: seqid %d extended to %ld, limits seqid %d with existing upper_bound = %ld because it's pos_in_r=%ld\n", s_seqIdx, seqid_extended_pos, r_seqIdx, r->upperSeqBound, pos_in_r);
             r->upperSeqBound = pos_in_r;
             r->upperSeqBoundFlag = EXT_BOUNDARY;
           }
@@ -452,6 +482,7 @@ main(int argc, char *argv[])
           {
             //printf("In seqid=%d, the extended pos maps to %ld and is in between lowerbound %ld and right_core %ld\n", r_seqIdx, pos_in_r, r->lowerSeqBound, r->rightSeqPos);
             //printf("Setting lower bound to %ld, was %ld\n", pos_in_r, r->lowerSeqBound);
+            printf("OVERLAP AVOIDANCE: seqid %d extended to %ld, limits seqid %d with existing lower_bound = %ld because it's pos_in_r=%ld\n", s_seqIdx, seqid_extended_pos, r_seqIdx, r->lowerSeqBound, pos_in_r);
             r->lowerSeqBound = pos_in_r;
             r->lowerSeqBoundFlag = EXT_BOUNDARY;
           }
@@ -462,7 +493,9 @@ main(int argc, char *argv[])
 
   masterend = L + l + rightbp;
 
+  //
   // Extend LEFT second (direction = 0)
+  //
   int leftbp = extend_alignment(0, coreAlign, score, seqLib, master,
                                 BANDWIDTH, CAPPENALTY, MINIMPROVEMENT, L, N,
                                 scoreParams, fp_mat);
@@ -474,35 +507,41 @@ main(int argc, char *argv[])
   // No need to display
   if (rightbp > 0 || leftbp > 0)
   {
-    printf(">left-extension\n");
-    for (x = masterstart; x < L; x++)
-    {
-      printf("%c", num_to_char(master[x]));
-      if ((x - masterstart) % 80 == 79)
+    // Some FASTA parsers are unhappy if an ID is present but the sequence is empty
+    if ( leftbp > 0 ) {
+      printf(">left-extension\n");
+      for (x = masterstart; x < L; x++)
+      {
+        printf("%c", num_to_char(master[x]));
+        if ((x - masterstart) % 80 == 79)
+          printf("\n");
+      }
+      if ((x - masterstart) % 80 > 0)
         printf("\n");
     }
-    if ((x - masterstart) % 80 > 0)
-      printf("\n");
 
-    printf(">right-extension\n");
-    for (x = L + l; x < masterend; x++)
-    {
-      printf("%c", num_to_char(master[x]));
-      if ((x - masterstart) % 80 == 79)
+    if ( rightbp > 0 ) {
+      printf(">right-extension\n");
+      for (x = L + l; x < masterend; x++)
+      {
+        printf("%c", num_to_char(master[x]));
+        if ((x - masterstart) % 80 == 79)
+          printf("\n");
+      }
+      if ((x - masterstart) % 80 > 0)
         printf("\n");
     }
-    if ((x - masterstart) % 80 > 0)
-      printf("\n");
 
-    printf(">combined_w_N_spacer\n");
-    for (x = masterstart; x < masterend; x++)
-    {
-      printf("%c", num_to_char(master[x]));
-      if ((x - masterstart) % 80 == 79)
-        printf("\n");
-    }
-    if ((x - masterstart) % 80 > 0)
-      printf("\n");
+    // This was a confusing output type...removing
+    //printf(">combined_w_N_spacer\n");
+    //for (x = masterstart; x < masterend; x++)
+    //{
+    //  printf("%c", num_to_char(master[x]));
+    //  if ((x - masterstart) % 80 == 79)
+    //    printf("\n");
+    //}
+    //if ((x - masterstart) % 80 > 0)
+    //  printf("\n");
 
     // Save consensus to a file, if requested
     if (CONS_FILE != NULL)
@@ -512,26 +551,30 @@ main(int argc, char *argv[])
         fprintf(stderr, "Could not open input file %s\n", CONS_FILE);
         exit(1);
       }
-      fprintf(fp, ">left-extension %d bp\n", leftbp);
-      for (x = masterstart; x < L; x++)
-      {
-        fprintf(fp, "%c", num_to_char(master[x]));
-        if ((x - masterstart) % 80 == 79)
+      if ( leftbp > 0 ) {
+        fprintf(fp, ">left-extension %d bp\n", leftbp);
+        for (x = masterstart; x < L; x++)
+        {
+          fprintf(fp, "%c", num_to_char(master[x]));
+          if ((x - masterstart) % 80 == 79)
+            fprintf(fp, "\n");
+        }
+        if ((x - masterstart) % 80 > 0)
           fprintf(fp, "\n");
       }
-      if ((x - masterstart) % 80 > 0)
-        fprintf(fp, "\n");
 
-      fprintf(fp, ">right-extension %d bp\n", rightbp);
-      for (x = L + l; x < masterend; x++)
-      {
-        fprintf(fp, "%c", num_to_char(master[x]));
-        if ((x - masterstart) % 80 == 79)
+      if ( rightbp > 0 ) {
+        fprintf(fp, ">right-extension %d bp\n", rightbp);
+        for (x = L + l; x < masterend; x++)
+        {
+          fprintf(fp, "%c", num_to_char(master[x]));
+          if ((x - masterstart) % 80 == 79)
+            fprintf(fp, "\n");
+        }
+        if ((x - masterstart) % 80 > 0)
           fprintf(fp, "\n");
+        fclose(fp);
       }
-      if ((x - masterstart) % 80 > 0)
-        fprintf(fp, "\n");
-      fclose(fp);
     }
 
     // Write out TSV and FA files or screen output
@@ -643,14 +686,23 @@ main(int argc, char *argv[])
       }
       printf("\n");
 
-      if (OUTTSV_FILE != NULL)
+      if (OUTTSV_FILE != NULL) {
         fprintf
           (fp,
-           "%s\t%ld\t%ld\t%c\tn=%ld,anchor_range=%ld-%ld,extended_left=%d,extended_right=%d,len=%d,score=%d\n",
+           "%s\t%ld\t%ld\t%c\tn=%ld,anchor_range=%ld-%ld",
            ident, subseq_offset+extended_start, subseq_offset+extended_end, orient, x,
            s->leftSeqPos - seqLowerBound + 1,
-           s->rightSeqPos - seqLowerBound + 1, s->leftExtensionLen,
-           s->rightExtensionLen, extended_length, s->score);
+           s->rightSeqPos - seqLowerBound + 1 );
+        if ( s->leftExtendable )
+          fprintf(fp,",extended_left=%d", s->leftExtensionLen);
+        else
+          fprintf(fp,",extended_left=*");
+        if ( s->rightExtendable )
+          fprintf(fp,",extended_right=%d", s->rightExtensionLen);
+        else
+          fprintf(fp,",extended_right=*");
+        fprintf (fp, ",len=%d,score=%d\n", extended_length, s->score);
+      }
 
       if (OUTFA_FILE != NULL) {
         // Sanity checks
@@ -940,14 +992,19 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
 
           // Compute a row of the banded DP matrix under a given consensus
           // hypothesis ("a").
+//if ( (row_idx == 21) )  {
+//    VERBOSE = 17;
+//        }
           curr_row_best_score = compute_nw_row(direction, row_idx, n, a, currCore,
                                                score, lower_seq_bound,
                                                upper_seq_bound,
                                                seqLib->sequence,
                                                &curr_row_best_col_idx,
                                                scoreParams, BANDWIDTH, L, VERBOSE, NULL);
+//VERBOSE = 0;
 
           if (VERBOSE >= 12)
+//if ( (row_idx >= 20 && row_idx <= 21) ) 
           {
             printf("    Gap: ");
             for (offset = -BANDWIDTH; offset <= BANDWIDTH; offset++)
@@ -961,7 +1018,12 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
 
           if (VERBOSE >= 10)
           {
-            printf("  best score = %d @ column %d, prev best score = %d",
+            if ( curr_row_best_score < 0 )
+              printf("  best score = %d @ column %d -- max(0,best_score) = 0!, prev best score = %d\n",
+                   curr_row_best_score, curr_row_best_col_idx,
+                   overall_sequence_high_score[n]);
+            else
+              printf("  best score = %d @ column %d, prev best score = %d\n",
                    curr_row_best_score, curr_row_best_col_idx,
                    overall_sequence_high_score[n]);
             // RMH: TODO...is this the best/only way to determine that a sequence has hit a limit?
@@ -970,7 +1032,17 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
               printf(" **OUT_OF_SEQ**");
           }
 
-          if ((curr_row_best_score - overall_sequence_high_score[n]) > CAPPENALTY)
+          if ( curr_row_best_score < 0 )
+             curr_row_best_score = 0;
+
+//if (( row_idx >= 20 && row_idx <= 21) ) {
+// printf("    c=%c  n=%d  => score = %d\n",num_to_char(a), n,
+//            curr_row_best_score);
+//}
+
+          //       curr_row_best_score, n, overall_sequence_high_score[n],
+          //       CAPPENALTY);
+          if (curr_row_best_score >= (overall_sequence_high_score[n] + CAPPENALTY))
           {
             score_given_cons += curr_row_best_score;
           }
@@ -990,6 +1062,12 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
         }                       // if extendable
         n++;
       }                         // for ( currCore=...
+
+//if (( row_idx >= 20 && row_idx <= 21) ) {
+//  printf("  Total Score for '%c' = %d\n", num_to_char(a),
+//               score_given_cons);
+//}
+
       if (VERBOSE >= 10)
         printf("  Total Score for '%c' = %d\n", num_to_char(a),
                score_given_cons);
@@ -1065,6 +1143,20 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
         }
         totalExtendable++;
       } // if extendable
+
+//if ( (row_idx >= 20 && row_idx <= 21) ) 
+//{
+//printf("    GapAFTER : ");
+//for (offset = -BANDWIDTH; offset <= BANDWIDTH; offset++)
+//printf(" %d", score[row_idx % 2][n][offset + BANDWIDTH][1]);
+//printf("\n");
+//printf("    SubAFTER: ");
+//for (offset = -BANDWIDTH; offset <= BANDWIDTH; offset++)
+//printf(" %d", score[row_idx % 2][n][offset + BANDWIDTH][0]);
+//printf("\n");
+//}
+
+
       n++;
     }
     float score_per_position_since_max = 0.0;
@@ -1085,6 +1177,10 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
              max_extension_score_row_idx,
              ((float) curr_extension_score / (row_idx + 1)),
              score_per_position_since_max, totalExtendable, numHighScore, numOutOfSeq );
+
+//if ( row_idx >= 20 && row_idx <= 21 ) {
+//printf("===> ext score %d ... row_idx = %d\n", curr_extension_score, row_idx);
+//}
 
     // What is the best extension score we have seen with sequences meeting
     // our minmum improvement per position criteria?
@@ -1131,13 +1227,14 @@ extend_alignment(int direction, struct coreAlignment *coreAlign,
   n=0;
   for (currCore = coreAlign; currCore != NULL && n < N; currCore = currCore->next)
   {
-    if ( trimmed_sequence_high_score[n] > 0 )
+    if ( trimmed_sequence_high_score[n] > 0  && trimmed_sequence_high_score_pos[n] >= 0)
     {
-    if (direction)
-      currCore->rightExtensionLen = trimmed_sequence_high_score_pos[n] + 1;
-    else
-      currCore->leftExtensionLen = trimmed_sequence_high_score_pos[n] + 1;
-    currCore->score += trimmed_sequence_high_score[n];
+      if (direction) {
+        currCore->rightExtensionLen = trimmed_sequence_high_score_pos[n] + 1;
+      }else {
+        currCore->leftExtensionLen = trimmed_sequence_high_score_pos[n] + 1;
+      }
+      currCore->score += trimmed_sequence_high_score[n];
     }
     n++;
   }

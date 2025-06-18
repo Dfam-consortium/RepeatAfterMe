@@ -234,10 +234,10 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib,
     maxIdxLen = 4;
 
   if ( debug == 1 ){
-    printf("%-*s %-*s %-*s %-*s %-*s  Left-Flank           Core           Right-Flank  %-*s Hard-Bounds Soft-Bounds\n",
+    printf("%-*s %-*s %-*s %-*s %-*s  Left-Flank           Core           Right-Flank  %-*s Hard-Bounds Soft-Bounds BoundFlags(Lower/Upper)\n",
          maxIdxLen, "Seq", maxIDLen, "Ident", maxPosLen*2+1,
          "BED-range", 6, "Orient", 4 , "L/R?", maxSArrayLen, "seq[]-core");
-    printf("----------------------------------------------------------------------------------------------\n");
+    printf("------------------------------------------------------------------------------------------------------------------------------------------------------------\n");
   }else {
     printf("%-*s %-*s %-*s %-*s %-*s  Left-Flank           Core           Right-Flank\n",
          maxIdxLen, "Seq", maxIDLen, "Ident", maxPosLen*2+1,
@@ -280,9 +280,11 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib,
     char tmpBuff[50];
     tmpBuff[0] = '\0';
     if (currCore->orient)
-      sprintf(tmpBuff,"%ld-%ld",subseq_offset+currCore->rightSeqPos-lowerBound, subseq_offset+currCore->leftSeqPos-lowerBound+1);
+      sprintf(tmpBuff,"%ld-%ld",subseq_offset+currCore->rightSeqPos-lowerBound,
+              subseq_offset+currCore->leftSeqPos-lowerBound+1);
     else
-      sprintf(tmpBuff,"%ld-%ld",subseq_offset+currCore->leftSeqPos-lowerBound, subseq_offset+currCore->rightSeqPos-lowerBound+1);
+      sprintf(tmpBuff,"%ld-%ld",subseq_offset+currCore->leftSeqPos-lowerBound, 
+              subseq_offset+currCore->rightSeqPos-lowerBound+1);
     int numPads = ((maxPosLen*2)+1) - strlen(tmpBuff);
     posBuffer[0] = '\0';
     for ( i = 0; i < numPads; i++ )
@@ -322,12 +324,12 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib,
 
 
       // Left Flanking Region
-      disp = 9;
+      disp = 10;
       if (currCore->leftSeqPos + 1 + disp > upperBound)
         disp = upperBound - currCore->leftSeqPos - 1;
 
       leftExt[0] = '\0';
-      if (disp < 9)
+      if (disp < 10)
         strcat(leftExt, "*");
       for (j = disp; j > 0; j--)
       {
@@ -366,7 +368,7 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib,
       }
 
       // Right Flanking Region
-      disp = 9;
+      disp = 10;
       if (currCore->rightSeqPos < disp)
         disp = currCore->rightSeqPos;
       else if (currCore->rightSeqPos - disp < lowerBound)
@@ -378,7 +380,7 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib,
         base[0] = num_to_char(compl(seqLib->sequence[currCore->rightSeqPos + j - 1]));
         strcat(rightExt, base);
       }
-      if (disp < 9)
+      if (disp < 10)
         strcat(rightExt, "*");
 
       printf("%-*d %s %s -      %d/%d ", maxIdxLen, n,
@@ -391,14 +393,14 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib,
       //
 
       // Left Flanking Region
-      disp = 9;
+      disp = 10;
       if (currCore->leftSeqPos < disp)
         disp = currCore->leftSeqPos;
       else if (currCore->leftSeqPos - disp < lowerBound)
         disp = currCore->leftSeqPos - lowerBound;
 
       leftExt[0] = '\0';
-      if (disp < 9)
+      if (disp < 10)
         strcat(leftExt, "*");
       for (j = -disp; j <= -1; j++)
       {
@@ -436,7 +438,7 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib,
       }
 
       // Right Flanking Region
-      disp = 9;
+      disp = 10;
       if (currCore->rightSeqPos + disp > upperBound)
         disp = upperBound - currCore->rightSeqPos;
 
@@ -446,7 +448,7 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib,
         base[0] = num_to_char(seqLib->sequence[currCore->rightSeqPos + j]);
         strcat(rightExt, base);
       }
-      if (disp < 9)
+      if (disp < 10)
         strcat(rightExt, "*");
 
       printf("%-*d %s %s +      %d/%d ", maxIdxLen, n,
@@ -459,10 +461,40 @@ printCoreEdges(struct coreAlignment *coreAlign, struct sequenceLibrary *seqLib,
     printf(" [%-24s] ", coreSeq);
     if (currCore->rightExtendable)
       printf("%-11s", rightExt);
+    else
+      printf("           ");
 
     if ( debug == 1 )
     {
       printf(" %s %ld-%ld %ld-%ld", sArrBuffer, lowerBound, upperBound, currCore->lowerSeqBound, currCore->upperSeqBound);
+      switch ( currCore->lowerSeqBoundFlag )  {
+        case L_BOUNDARY:
+          printf(" L_BOUNDARY");
+          break;
+        case SEQ_BOUNDARY:
+          printf(" SEQ_BOUNDARY");
+          break;
+        case CORE_BOUNDARY:
+          printf(" CORE_BOUNDARY");
+          break;
+        case EXT_BOUNDARY:
+          printf(" EXT_BOUNDARY");
+          break;
+      }
+      switch ( currCore->upperSeqBoundFlag )  {
+        case L_BOUNDARY:
+          printf("/L_BOUNDARY");
+          break;
+        case SEQ_BOUNDARY:
+          printf("/SEQ_BOUNDARY");
+          break;
+        case CORE_BOUNDARY:
+          printf("/CORE_BOUNDARY");
+          break;
+        case EXT_BOUNDARY:
+          printf("/EXT_BOUNDARY");
+          break;
+      }
     }
     printf("\n");
     n++;

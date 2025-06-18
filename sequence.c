@@ -460,27 +460,33 @@ loadSequenceSubset(char *twoBitName, char *rangeBEDName,
  *   sequences are loaded for multiple cores, although in practice this doesn't
  *   account for much overhead due to the TANDEMDIST requirement.
  *
+ *   The amount of flanking sequences to load is depending on the length of
+ *   extensions allowed (L parameter) and the bandwidth of the DP calcuations.
+ *   The bandwidth is parameter used by this code is amount tolerated from
+ *   the diagonal (e.g. no gaps or 1/2 the total bandwidth of the matrix).
+ *   So if we assume we can have no more than bandwidth insertions in the
+ *   tolerated alignment we should only need to load L+bandwidth bp of flanking
+ *   sequences to not run out of characters in an extension.
+ *
+ *   The cores have four fields lower/upperSeqBound and lower/upperSeqBoundFlag
+ *   that are set to restrict the extension of the core sequence to the hard
+ *   limits of what was loaded.  They also provide a means to further restrict
+ *   the extension should another core sequence be within those limits or if
+ *   extension on one side *uses* sequence found in one of these flanking
+ *   regions.
+ *
+ *   So the boundaries (at this stage) can be either:
+ *          SEQ_BOUNDARY:  The boundary reflects a seqeuence extent (either
+ *                         position 0 or the length of the sequence).
+ *          L_BOUNDARY:    The boundary reflects the maximum amount of flanking
+ *                         bp allowed (typically L+BANDWIDTH).
+ *
+ *          CORE_BOUNDARY: The boundary reflects a limit imposed by nearby core
+ *                         that we we are not allowed to resuse.
+ *
  *   NOTE: This is designed for BED files with low-high sequence coordinates
  *         and relies on the orient field to define which is the left/right
  *         edge.
- *
- *   TODO:
- *     - Add support for extension overlap detection ( tandem repeats )
- *       In RAMDenovo short tandem repeats are avoided using the TANDEMDIST
- *       parameter.  This is a simple way to avoid picking words near each
- *       other.   In RAMExtend I would to avoid *and* detect these patterns
- *       at the same time using the coordinates of each core sequence *and*
- *       the extension limits from the first side extension to limit the
- *       second side extension.
- *
- *       So when loading sequences, we can either limit loading the left
- *       flank, if there is another core sequence <10,000bp upstream.
- *       Or we could record this position in a new left-limit field.
- *
- *       The right sequence needs to be loaded, regardless, as it will be
- *       limited by the left-extension limits.
- *       To determine the best approach, I need to see what the easiest way
- *       will be to catch this in the dynamic programming loops.
  *
  */
 
@@ -544,6 +550,78 @@ loadSequenceSubsetMinimal(char *twoBitName, char *rangeBEDName,
     enum CoreBoundFlag lower_bound_flag = L_BOUNDARY;
     enum CoreBoundFlag upper_bound_flag = L_BOUNDARY;
 
+    //printf("Working on %s:%d-%d\n", s->name, s->start, s->end);
+    struct twoBitSeqSpec *prev_seq_core = NULL;
+    int prev_core_dist = 0;
+    if ( prev_seq != NULL && strcmp(s->name, prev_seq->name) == 0 ){
+       if ( s->start < prev_seq->end ) {
+         printf("WARNING: core sequences overlap  %s:%d-%d and previous %s:%d-%d\n",
+                s->name, s->start, s->end, prev_seq->name, prev_seq->start, prev_seq->end);
+         prev_core_dist = 0;
+       }else {
+         prev_core_dist = s->start - prev_seq->end;
+       }
+       prev_seq_core = prev_seq;
+    }
+    struct twoBitSeqSpec *next_seq_core = NULL;
+    int next_core_dist = 0;
+    if ( s->next != NULL && strcmp(s->name, s->next->name) == 0 ){
+       if ( s->next->start < s->end ) {
+         printf("WARNING: core sequences overlap  %s:%d-%d and next %s:%d-%d\n",
+                s->name, s->start, s->end, s->next->name, s->next->start, s->next->end);
+         next_core_dist = 0;
+       }else {
+         next_core_dist = s->next->start - s->end;
+       }
+       next_seq_core = s->next;
+    }
+
+    // There are two regimes we need to consider when setting
+    // core-based boundaries.  The first case is that we are
+    // considering neighbor pairs that are on the same strand.
+    // In that case extensions will not collide as they are on
+    // the same side of their respective cores.
+    //
+    //   Left Extension
+    //     <---|>>>core1>>>|    <---|>>>core2>>>|
+    //
+    //         |<<<core1<<<|--->    |<<<core2<<<|--->
+    //
+    //   Right Extension
+    //         |>>>core1>>>|--->    |>>>core2>>>|--->
+    //
+    //     <---|<<<core1<<<|    <---|<<<core2<<<|
+    //
+    // The only boundary that matters is that of the neighbor
+    // core itself.
+    //
+    // The second case is that we are considering neighbor pairs
+    // that are on opposite strands.  In that case extensions
+    // have the potential to collide as they are on opposite sides
+    // of their respective cores.
+    //
+    // Left Extension
+    //     |<<<core1<<<|--->   <---|>>>core2>>>|
+    //       flanking_end = 1/2
+    //
+    //     Note: That this sub-case is does not have this issue:
+    //     <---|>>>core1>>>|    |<<<core2<<<|--->
+    //
+    // Right Extension
+    //     |>>>core1>>>|--->   <---|<<<core2<<<|
+    //
+    //    Also not an issue.
+    //    <---|<<<core1<<<|    |>>>core2>>>|--->
+    //
+    // For the sub-cases where ther is collision potential, the
+    // most efficient way to handle this is to set the boundaries
+    // to be the midpoint between the two cores.
+    //
+    // In most cases sequences will be bounded by the maximum allowed
+    // extension length (L-bounded).  In less common cases they will
+    // be bounded by absolute sequence limits (SEQ_BOUNDARAY), nearby
+    // cores (CORE_BOUNDARY), and finally they could potentially
+    // be bounded by the midpoint between nearby reverse strand cores.
     if (strcmp(s->strand, "-") == 0)
     {
       // Reverse strand
@@ -552,7 +630,19 @@ loadSequenceSubsetMinimal(char *twoBitName, char *rangeBEDName,
       // BED6:name = leftExtendable in our use
       if ( atoi(s->bedName) == 1 )
       {
-        if ( s->end + max_flanking_bp < seq_size )
+        if ( next_seq_core && next_core_dist <= max_flanking_bp )
+        {
+          if ( s->strand == next_seq_core->strand || atoi(next_seq_core->bedName) == 0 )
+          {
+            flanking_end = s->end + next_core_dist;
+            upper_flank_len = next_core_dist;
+            upper_bound_flag = CORE_BOUNDARY; // core limited boundary
+          }else {
+            flanking_end = s->end + floor(next_core_dist/2);
+            upper_flank_len = floor(next_core_dist/2);
+            upper_bound_flag = CORE_BOUNDARY;
+          }
+        }else if ( s->end + max_flanking_bp < seq_size )
         {
           flanking_end = s->end + max_flanking_bp;
           upper_flank_len = max_flanking_bp;
@@ -566,7 +656,20 @@ loadSequenceSubsetMinimal(char *twoBitName, char *rangeBEDName,
       // BED6:score = rightExtendable in our use
       if ( atoi(s->score) == 1 )
       {
-        if ( max_flanking_bp < s->start )
+        if ( prev_seq_core && prev_core_dist <= max_flanking_bp )
+        {
+          // if prev_core is on the same strand or it's not right-extendable
+          if ( s->strand == prev_seq_core->strand || atoi(prev_seq_core->score) == 0 )
+          {
+            flanking_start = s->start - prev_core_dist;
+            lower_flank_len = prev_core_dist;
+            lower_bound_flag = CORE_BOUNDARY; // core limited boundary
+          }else {
+            flanking_start = s->start - ceil(prev_core_dist/2);
+            lower_flank_len = ceil(prev_core_dist/2);
+            lower_bound_flag = CORE_BOUNDARY;
+          }
+        }else if ( max_flanking_bp < s->start )
         {
           flanking_start = s->start - max_flanking_bp;
           lower_flank_len = max_flanking_bp;
@@ -584,7 +687,20 @@ loadSequenceSubsetMinimal(char *twoBitName, char *rangeBEDName,
       // BED6:name = leftExtendable in our use
       if ( atoi(s->bedName) == 1 )
       {
-        if ( max_flanking_bp < s->start )
+        if ( prev_seq_core && prev_core_dist <= max_flanking_bp )
+        {
+          // if prev_core is on the same strand or it's not left-extendable
+          if ( s->strand == prev_seq_core->strand || atoi(prev_seq_core->bedName) == 0 )
+          {
+            flanking_start = s->start - prev_core_dist;
+            lower_flank_len = prev_core_dist;
+            lower_bound_flag = CORE_BOUNDARY; // core limited boundary
+          }else {
+            flanking_start = s->start - ceil(prev_core_dist/2);
+            lower_flank_len = ceil(prev_core_dist/2);
+            lower_bound_flag = CORE_BOUNDARY;
+          }
+        }else if ( max_flanking_bp < s->start )
         {
           flanking_start = s->start - max_flanking_bp;
           lower_flank_len = max_flanking_bp;
@@ -599,7 +715,20 @@ loadSequenceSubsetMinimal(char *twoBitName, char *rangeBEDName,
       // BED6:score = rightExtendable in our use
       if ( atoi(s->score) == 1 )
       {
-        if ( s->end+max_flanking_bp < seq_size )
+        if ( next_seq_core && next_core_dist <= max_flanking_bp )
+        {
+          // if next_core is on the same strand or it's not right-extendable
+          if ( s->strand == next_seq_core->strand || atoi(next_seq_core->score) == 0 )
+          {
+            flanking_end = s->end + next_core_dist;
+            upper_flank_len = next_core_dist;
+            upper_bound_flag = CORE_BOUNDARY; // core limited boundary
+          }else {
+            flanking_end = s->end + floor(next_core_dist/2);
+            upper_flank_len = floor(next_core_dist/2);
+            upper_bound_flag = CORE_BOUNDARY;
+          }
+        }else if ( s->end+max_flanking_bp < seq_size )
         {
           flanking_end = s->end + max_flanking_bp;
           upper_flank_len = max_flanking_bp;
@@ -612,6 +741,7 @@ loadSequenceSubsetMinimal(char *twoBitName, char *rangeBEDName,
         }
       }
     }
+    //printf("Setting flanking for %d to %d [%d] - %d [%d]\n", seq_idx, lower_flank_len, lower_bound_flag, upper_flank_len, upper_bound_flag);
 
     // Extract subsequence + flanking:
     //      |--- <= max_flanking_bp ----^^^^^^^core^^^^^^^^--- <= max_flanking_bp ----|
@@ -709,36 +839,14 @@ loadSequenceSubsetMinimal(char *twoBitName, char *rangeBEDName,
     curr_core_align->seqIdx = seq_idx-1;
 
     //
-    // Set the core alignment bounds
+    // Update the bounds for potential neighbor core conflicts
     //
     curr_core_align->lowerSeqBound = total_seq_size - seq->size;
     curr_core_align->upperSeqBound = total_seq_size - 1;
     curr_core_align->lowerSeqBoundFlag = lower_bound_flag;
     curr_core_align->upperSeqBoundFlag = upper_bound_flag;
-    //printf("Core %d: before: %d-%d ", range_cnt, curr_core_align->lowerSeqBound, curr_core_align->upperSeqBound);
-    // Look for core conflicts
-    if ( prev_seq != NULL && strcmp(s->name, prev_seq->name) == 0 )
-    {
-      if ( s->start - prev_seq->end <= lower_flank_len )
-      {
-        //printf("BED: Found potential lower bound conflict!\n");
-        curr_core_align->lowerSeqBound = total_seq_size - seq->size + ( lower_flank_len - (s->start - prev_seq->end) );
-        curr_core_align->lowerSeqBoundFlag = CORE_BOUNDARY; // core limited boundary
-      }
-    }
-    if ( s->next != NULL && strcmp(s->name, s->next->name) == 0 )
-    {
-      if ( s->end + upper_flank_len >= s->next->start )
-      {
-        //printf("BED: Found potential upper bound conflict! %ld and next is at %ld diff %ld ... %ld upper_flank_len = %ld\n", s->end, s->next->start, s->next->start - s->end, (upper_flank_len - (s->next->start - s->end - 1)), upper_flank_len);
-        //printf("BED:     total_seq_size = %ld, ( upper_flank_len - (s->next->start - s->end - 1) ) = %ld\n", total_seq_size, ( upper_flank_len - (s->next->start - s->end - 1) ));
-        curr_core_align->upperSeqBound = total_seq_size - ( upper_flank_len - (s->next->start - s->end ) ) - 1;
-        curr_core_align->upperSeqBoundFlag = CORE_BOUNDARY;
-      }
-    }
-    //printf("CORE: %d %ld [%d] - %ld [%d]\n", range_cnt, curr_core_align->lowerSeqBound, curr_core_align->lowerSeqBoundFlag, curr_core_align->upperSeqBound, curr_core_align->upperSeqBoundFlag);
-    prev_seq = s;
 
+    // Set extendability flags (sort of redundant now that we have sequence bounds)
     // BED6:name = leftExtendable in our use
     if (atoi(s->bedName) == 1)
       curr_core_align->leftExtendable = 1;
@@ -790,6 +898,8 @@ loadSequenceSubsetMinimal(char *twoBitName, char *rangeBEDName,
       *core_align = curr_core_align;
 
     seq_idx++;
+    prev_seq = s;
+
     dnaSeqFree(&seq);
   }
   twoBitSpecFree(&tbs);

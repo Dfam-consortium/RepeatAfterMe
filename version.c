@@ -1,3 +1,3 @@
-char const* Version = "0.0.4";
-char const* BuildNumber = "441";
-char const* BuildDate = "20241017";
+char const* Version = "0.0.6";
+char const* BuildNumber = "539";
+char const* BuildDate = "20250618";

@@ -855,16 +855,16 @@ compute_nw_row(int direction, int row_idx, int n, char cons_base,
       if (VERBOSE > 12 && VERBOSE < 100)
         printf
           ("Short circuiting right extension n=%d ( start_seq_pos = %ld, "
-           "seq_offset = %d ) because of upper sequence bound %ld\n", n,
-            start_seq_pos, seq_offset, upper_seq_bound);
+           "seq_offset = %d, seq_idx = %ld ) because of upper sequence bound %ld\n", n,
+            start_seq_pos, seq_offset, seq_idx, upper_seq_bound);
     }else if ( seq_idx < lower_seq_bound )
     {
       out_of_bounds = 1;
       if (VERBOSE > 12 && VERBOSE < 100)
         printf
           ("Short circuiting right extension n=%d ( start_seq_pos = %ld, "
-           "seq_offset = %d ) because of lower sequence bound %ld\n", n,
-           start_seq_pos, seq_offset, lower_seq_bound);
+           "seq_offset = %d, seq_idx = %ld ) because of lower sequence bound %ld\n", n,
+           start_seq_pos, seq_offset, seq_idx, lower_seq_bound);
     }
 
     if (!out_of_bounds)
