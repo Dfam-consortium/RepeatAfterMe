@@ -96,43 +96,18 @@ Robert Hubley <rhubley@systemsbiology.org>
 =cut
 
 #
-# Module Dependence
+# Bootstrap Module Dependence
 #
 use strict;
 use Getopt::Long;
 use Data::Dumper;
 use FindBin;
-# This script can be used from RepeatAfterMe/util directory or
-# it may be installed in RepeatModeler/util
-my $rmodDir = "/home/rhubley/projects/RepeatModeler";
-if ( -s "$FindBin::RealBin/../RepModelConfig.pm" ) {
-  use lib "$FindBin::RealBin";
-  use lib "$FindBin::RealBin/..";
-  $rmodDir = "$FindBin::RealBin/..";
-}else {
-  use lib "/home/rhubley/projects/RepeatModeler";
-}
-use RepModelConfig;
-use MultAln;
-use EMBL;
-use SeedAlignment;
-use SeedAlignmentCollection;
 use File::Path 'rmtree';
 use File::Temp qw/ tempfile tempdir /;
 use Cwd;
 
-# RepeatModeler version
-my $RMOD_VERSION = $RepModelConfig::VERSION;
-
-# Program version
-my $Version = 0.2;
-
-#
-# Paths
-#
-#my $RepeatAfterMeDir = "RepeatAfterMe";
-my $RepeatAfterMeDir = "/home/rhubley/notebooks/2024/1004-repeat_after_me_satellites/RepeatAfterMe-dev";
-
+my $Version = 0.3;
+my $RepeatAfterMeDir = "$FindBin::RealBin/..";
 
 # Option processing
 #  e.g.
@@ -148,6 +123,7 @@ my @getopt_args = (
                     '-msaout|m=s',
                     '-onlyextend|e',
                     '-outprefix=s',
+                    '-repeatmodeler_dir=s',
                     '-bandwidth|b=i',
                     '-save_tsv_files|s',
                     '-debug|d'
@@ -163,6 +139,34 @@ sub usage {
   exec "pod2text $0";
   exit( 1 );
 }
+
+# Resolve dependencies
+my $rmodDir = "";
+if ( exists $ENV{'REPEATMODELER_DIR'} && -d $ENV{'REPEATMODELER_DIR'} ) {
+  $rmodDir = $ENV{'REPEATMODELER_DIR'};
+}
+if ( $options{'repeatmodeler_dir'} && -d $options{'repeatmodeler_dir'} ) {
+  $rmodDir = $options{'repeatmodeler_dir'};
+}
+
+if ( $rmodDir eq "" ) {
+  die "\n\nERROR: Could not find RepeatModeler installation.\n" .
+      "      Please either set the REPEATMODELER_DIR environment variable\n" .
+      "      or use provide the path to RepeatModeler with the\n" .
+      "      -repeatmodeler_dir command line option.\n\n";
+}else { print "rmodDir = $rmodDir\n"; }
+
+require lib;
+lib->import($rmodDir);
+require RepModelConfig;
+RepModelCOnfig->import();
+require MultAln;
+require EMBL;
+require SeedAlignment;
+require SeedAlignmentCollection;
+
+# RepeatModeler version
+my $RMOD_VERSION = $RepModelConfig::VERSION;
 
 my $DEBUG = 0;
 $DEBUG = 1 if ( $options{'debug'} );

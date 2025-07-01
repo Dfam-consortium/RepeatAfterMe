@@ -154,6 +154,7 @@ usage()
           "     -stopafter <num>      # Stop the alignment after this number of no-progress columns (100).\n"
           "     -minlength <num>      # Minimum required length for a sequence to be reported (50).\n"
           "     -outmat <file>        # Dump the dp matrix paths to a file for debugging.\n"
+          "     -version              # Print out one-line version information\n"
           "     -v[v[v[v]]]           # How verbose do you want it to be?  -vvvv is super-verbose.\n"
           "\n"
           "   New Scoring System Options:\n"
@@ -224,6 +225,12 @@ main(int argc, char *argv[])
   FILE *fp_fa = NULL;
   FILE *fp_mat = NULL;
   start = time(0);
+
+  if ( co_get_bool(argc, argv, "-version", &opt) ) {
+    printf( "RAMExtend Version %s - build %s date %s\n"
+            , Version, BuildNumber, BuildDate);
+    exit(0);
+  }
 
   if (co_get_string(argc, argv, "-ranges", &RANGES_FILE) == 0)
   {
