@@ -1,0 +1,31 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo.lock is usually committed for binaries; uncomment if you'd rather not track it
+# Cargo.lock
+
+# Editor/IDE
+*.swp
+*~
+.idea/
+.vscode/
+
+# Profiling / debugging leftovers
+*.profraw
+callgrind.out.*
+perf.data*
+
+# Harness scratch output (diff-c-rust.sh workdirs, if run in-tree)
+/work/
+
+
+# C build artifacts under c/
+*.o
+*.a
+/c/RAMExtend
+/c/test_suite
+/c/kentsrc/twoBitReadTest
+
+# Rust binary copied to the top of the tree under its C name
+/RAMExtend

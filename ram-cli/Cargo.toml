@@ -1,0 +1,20 @@
+[package]
+name = "ram-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Flag-compatible RAMExtend command line tool backed by ram-core"
+
+[[bin]]
+name = "ram-extend"
+path = "src/main.rs"
+
+[dependencies]
+ram-core = { path = "../ram-core" }
+# Stockholm parsing and MSA statistics for the -stk mode, shared with the
+# wider Dfam Rust toolchain rather than reimplemented here. Consumed from
+# dfam-lib's published tag, not a sibling checkout: a path dependency ties
+# this to one machine's layout, and mixing path and git deps for the same
+# crate compiles two incompatible copies of it.
+dfam-stk-io = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.1.0" }
+aln-core = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.1.0" }
