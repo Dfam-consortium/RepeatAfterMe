@@ -21,10 +21,30 @@ Releases through `RepeatAfterMe_V0.0.7` were C. Those sources are frozen under
 [`c/`](c/) and still build; the tags that produced them are unchanged, so
 anything pinned to a release tarball keeps resolving to the same bytes.
 
-This tree is a Rust reimplementation. It is flag-compatible with C v0.0.7,
-produces byte-identical `-outtsv`, `-cons`, and `-outfa` output, and prints the
-same stdout lines that RepeatModeler's `Refiner` scrapes. `harness/diff-c-rust.sh` checks that claim against the
-C binary built from `c/`.
+This tree is a Rust reimplementation. It takes the same flags as C v0.0.7 and
+prints the same stdout lines that RepeatModeler's `Refiner` scrapes.
+
+It is not a byte-identical port. Three C bugs are fixed by default:
+
+- The loader split the gap between neighboring cores at the midpoint even when
+  both were on the same strand. The same-strand test compared `char*` pointers
+  from separate allocations, so it never fired. A same-strand neighbor now
+  cedes the full inter-core distance.
+- The right-extension consensus block wrapped at a phase offset by the length
+  of the left extension instead of at a clean 80 columns.
+- The `-outtsv` anchor_range left out the subsequence offset and the
+  orientation swap that the stdout report applies.
+
+The first of these changes how far a family extends. Running the `c/test/`
+families under Refiner parameters, ce10-fam2 extends 193 bp to the left where
+the C tool stops at 131. Anyone comparing output across the two
+implementations should expect differences of that size.
+
+`-ccompat` restores all three C behaviors, and that is how the port is
+validated. `harness/diff-c-rust.sh` runs both binaries over three families
+under four parameter sets and compares `-outtsv`, `-cons`, `-outfa`, and the
+scraped stdout lines byte-for-byte. All twelve comparisons match under
+`-ccompat`; all twelve differ without it.
 
 ## Building
 

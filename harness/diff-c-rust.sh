@@ -19,6 +19,12 @@ if [ -z "${SKIP_BUILD:-}" ]; then
     [ -x "$C_BIN" ] || make -C "$(dirname "$0")/../c" RAMExtend || exit 1
 fi
 TESTDIR=${TESTDIR:-$(dirname "$0")/../c/test}
+# An absent C binary would otherwise read as "every comparison differs".
+if [ ! -x "$C_BIN" ]; then
+    echo "no C binary at $C_BIN (build it with: make -C c RAMExtend)" >&2
+    exit 2
+fi
+
 WORK=${1:-$(mktemp -d)}
 mkdir -p "$WORK"
 HARNESS_DIR=$(dirname "$0")
