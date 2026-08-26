@@ -558,43 +558,22 @@ fn write_report(
         let ident = &lib.identifiers[seq_idx];
         let seq_lower = lib.lower_bound(seq_idx);
         let seq_upper = lib.boundaries[seq_idx];
-        let subseq_offset = lib.offsets[seq_idx];
 
-        let (extended_start, extended_end, orient_ch, core_start, core_end) = if s.orient {
-            (
-                s.right_seq_pos
-                    .wrapping_sub(s.right_extension_len as u64)
-                    .wrapping_sub(seq_lower)
-                    .wrapping_add(1),
-                s.left_seq_pos
-                    .wrapping_add(s.left_extension_len as u64)
-                    .wrapping_sub(seq_lower)
-                    .wrapping_add(1),
-                '-',
-                s.right_seq_pos - seq_lower + 1 + subseq_offset,
-                s.left_seq_pos - seq_lower + 1 + subseq_offset,
-            )
-        } else {
-            (
-                s.left_seq_pos
-                    .wrapping_sub(s.left_extension_len as u64)
-                    .wrapping_sub(seq_lower)
-                    .wrapping_add(1),
-                s.right_seq_pos
-                    .wrapping_add(s.right_extension_len as u64)
-                    .wrapping_sub(seq_lower)
-                    .wrapping_add(1),
-                '+',
-                s.left_seq_pos - seq_lower + 1 + subseq_offset,
-                s.right_seq_pos - seq_lower + 1 + subseq_offset,
-            )
-        };
-        let extended_length = extended_end.wrapping_sub(extended_start).wrapping_add(1) as i64;
+        // The report is 1-based fully closed on the source sequence.
+        let orient_ch = if s.orient { '-' } else { '+' };
+        let extended = s.extended_span();
+        let (extended_start, extended_end) = lib
+            .to_source(seq_idx, extended)
+            .as_1b_closed()
+            .expect("a core covers at least one base");
+        let (core_start, core_end) = lib
+            .to_source(seq_idx, s.core_span())
+            .as_1b_closed()
+            .expect("a core covers at least one base");
+        let extended_length = extended.len() as i64;
 
         let mut line = format!(
-            "{ident}\t{}\t{}\t{orient_ch}\tn={x},anchor_range={core_start}-{core_end}",
-            subseq_offset + extended_start,
-            subseq_offset + extended_end
+            "{ident}\t{extended_start}\t{extended_end}\t{orient_ch}\tn={x},anchor_range={core_start}-{core_end}"
         );
         line.push_str(&if s.left_extendable {
             format!(",extended_left={}", s.left_extension_len)
@@ -656,8 +635,9 @@ fn write_report(
 
         if let Some(fp) = fp_tsv.as_mut() {
             // PORT NOTE: the C TSV writes the anchor range without the
-            // subsequence offset and without orient swapping, disagreeing
-            // with its own stdout report; fixed mode matches stdout.
+            // subsequence offset and without orient swapping (so it is
+            // descending for a minus core), disagreeing with its own stdout
+            // report; fixed mode matches stdout.
             let (anchor_a, anchor_b) = if cfg.c_compat {
                 (
                     s.left_seq_pos - seq_lower + 1,
@@ -667,9 +647,7 @@ fn write_report(
                 (core_start, core_end)
             };
             let mut t = format!(
-                "{ident}\t{}\t{}\t{orient_ch}\tn={x},anchor_range={anchor_a}-{anchor_b}",
-                subseq_offset + extended_start,
-                subseq_offset + extended_end
+                "{ident}\t{extended_start}\t{extended_end}\t{orient_ch}\tn={x},anchor_range={anchor_a}-{anchor_b}"
             );
             t.push_str(&if s.left_extendable {
                 format!(",extended_left={}", s.left_extension_len)
@@ -690,18 +668,18 @@ fn write_report(
                 eprintln!("Error: Negative extension length detected");
                 std::process::exit(1);
             }
-            let (mut int_start, mut int_end) = if s.orient {
-                (
-                    s.right_seq_pos.wrapping_sub(s.right_extension_len as u64),
-                    s.left_seq_pos.wrapping_add(s.left_extension_len as u64),
-                )
-            } else {
-                (
-                    s.left_seq_pos.wrapping_sub(s.left_extension_len as u64),
-                    s.right_seq_pos.wrapping_add(s.right_extension_len as u64),
-                )
-            };
+            // Positions of the first and last base to emit, in the library
+            // buffer. The C walks these inclusively, and its flank clamps
+            // below are stated on positions, so they stay positions here.
+            let (mut int_start, mut int_end) = (extended.start(), extended.end() - 1);
             let flanking = cfg.flanking;
+            // Computed after the clamps below; `int_end` may equal the
+            // subsequence boundary, which the C also reads.
+            let emitted_1b = |a: u64, b: u64| {
+                lib.to_source(seq_idx, ram_core::Span::new(a, b + 1).expect("a <= b"))
+                    .as_1b_closed()
+                    .expect("non-empty")
+            };
             if flanking > 0 {
                 // PORT NOTE: the C clamps to 1 (not 0) at a sequence start.
                 if seq_lower == 0 && flanking as u64 > int_start {
@@ -716,8 +694,8 @@ fn write_report(
                 }
                 writeln!(fp,
                     ">{ident}:{}-{}_{orient_ch}  n={x},anchor_range={}-{},extended_left={},extended_right={},len={extended_length},flanking={flanking},score={}",
-                    subseq_offset + int_start - seq_lower + 1,
-                    subseq_offset + int_end - seq_lower + 1,
+                    emitted_1b(int_start, int_end).0,
+                    emitted_1b(int_start, int_end).1,
                     s.left_seq_pos - seq_lower + 1,
                     s.right_seq_pos - seq_lower + 1,
                     s.left_extension_len,
@@ -727,8 +705,8 @@ fn write_report(
             } else {
                 writeln!(fp,
                     ">{ident}:{}-{}_{orient_ch}  n={x},anchor_range={}-{},extended_left={},extended_right={},len={extended_length},score={}",
-                    subseq_offset + int_start - seq_lower + 1,
-                    subseq_offset + int_end - seq_lower + 1,
+                    emitted_1b(int_start, int_end).0,
+                    emitted_1b(int_start, int_end).1,
                     s.left_seq_pos - seq_lower + 1,
                     s.right_seq_pos - seq_lower + 1,
                     s.left_extension_len,

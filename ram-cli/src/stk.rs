@@ -92,8 +92,8 @@ pub fn plan_families(
         let mut aligned_rows: Vec<&str> = Vec::new();
         let mut n_extendable = 0usize;
         for row in &record.sequences {
-            let (Some(seq_id), Some(s0), Some(e0), Some(orient)) =
-                (&row.sequence_id, row.seq_start, row.seq_end, row.orient)
+            let (Some(seq_id), Some(span), Some(orient)) =
+                (&row.sequence_id, row.span, row.orient)
             else {
                 continue;
             };
@@ -104,12 +104,10 @@ pub fn plan_families(
             }
             n_extendable += 1;
             ranges.push(RangeRecord {
-                // RepeatModeler seed names are 1-based inclusive and
-                // dfam-stk-io returns them verbatim; RangeRecord wants
-                // 0-based half-open (enforced by the calibration test).
+                // dfam-stk-io and RangeRecord share the half-open convention,
+                // so the span passes through (the calibration test pins it).
                 name: seq_id.clone(),
-                start: s0 as i64 - 1,
-                end: e0 as i64,
+                span,
                 left_flag: i32::from(left),
                 right_flag: i32::from(right),
                 minus: orient == '-',
@@ -275,7 +273,7 @@ mod tests {
 
     /// Coordinate calibration: a Smitten name `chr1:101-200_+` (1-based
     /// inclusive in RepeatModeler files) must produce the 0-based
-    /// half-open RangeRecord {start:100, end:200} that the loader and
+    /// half-open RangeRecord span `100..200` that the loader and
     /// `stk2ranges.py` agree on.
     #[test]
     fn coordinates_match_stk2ranges_convention() {
@@ -292,7 +290,7 @@ mod tests {
         std::fs::remove_file(&p).unwrap();
         assert_eq!(plans.len(), 1);
         let r = &plans[0].ranges[0];
-        assert_eq!((r.start, r.end), (100, 200), "calibration: got {r:?}");
+        assert_eq!(r.span.as_0b_half_open(), (100, 200), "calibration: got {r:?}");
         assert!(plans[0].ranges[1].minus);
         assert!(plans[0].skip_reason.is_none());
     }

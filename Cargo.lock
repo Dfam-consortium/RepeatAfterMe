@@ -13,13 +13,13 @@ dependencies = [
 
 [[package]]
 name = "aln-coord"
-version = "0.1.2"
-source = "git+https://github.com/Dfam-consortium/dfam-lib?tag=0.1.2#fc37d3bd381222480a791296ba3e898e38123626"
+version = "0.2.0"
+source = "git+https://github.com/Dfam-consortium/dfam-lib?tag=0.2.0#34f2134c81ab6a834c68daa53d70ae8d222d3aa6"
 
 [[package]]
 name = "aln-core"
-version = "0.1.2"
-source = "git+https://github.com/Dfam-consortium/dfam-lib?tag=0.1.2#fc37d3bd381222480a791296ba3e898e38123626"
+version = "0.2.0"
+source = "git+https://github.com/Dfam-consortium/dfam-lib?tag=0.2.0#34f2134c81ab6a834c68daa53d70ae8d222d3aa6"
 dependencies = [
  "aln-coord",
  "thiserror",
@@ -52,9 +52,10 @@ checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
 name = "dfam-stk-io"
-version = "0.1.2"
-source = "git+https://github.com/Dfam-consortium/dfam-lib?tag=0.1.2#fc37d3bd381222480a791296ba3e898e38123626"
+version = "0.2.0"
+source = "git+https://github.com/Dfam-consortium/dfam-lib?tag=0.2.0#34f2134c81ab6a834c68daa53d70ae8d222d3aa6"
 dependencies = [
+ "aln-coord",
  "aln-core",
  "smitten",
 ]
@@ -102,6 +103,7 @@ dependencies = [
 name = "ram-core"
 version = "0.1.0"
 dependencies = [
+ "aln-coord",
  "aln-core",
  "rayon",
 ]

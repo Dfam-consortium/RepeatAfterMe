@@ -21,18 +21,17 @@
 use crate::engine::{compute_nw_row, Direction, ScoreArena};
 use crate::library::{CoreAlignment, CoreBoundFlag, SequenceLibrary};
 use crate::matrix::ScoringSystem;
+use aln_coord::Span;
 
 /// Result of one glocal search (C `struct glocalSearchResult`).
-/// Query coordinates are 0-based inclusive indices into the query slice;
-/// subject coordinates are 0-based inclusive positions in the concatenated
-/// library sequence.
+///
+/// `query` is on the query slice; `subj` is on the concatenated library
+/// sequence. Both always contain the seed, so neither is empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GlocalResult {
     pub score: i32,
-    pub query_start: i32,
-    pub query_end: i32,
-    pub subj_start: u64,
-    pub subj_end: u64,
+    pub query: Span,
+    pub subj: Span,
 }
 
 /// Locate the subsequence containing `pos` (first boundary beyond it).
@@ -145,25 +144,23 @@ pub fn cons_seed_extend(
     let (right_score, seq_right_idx, cons_right_idx) = run_leg(arena, Direction::Right);
 
     // Convert the best-cell indices (bases consumed minus one; -1 = none)
-    // into genomic coordinates.
+    // into spans. The seed is inclusive on both ends, so the subject span
+    // ends one past `subj_seed_end`.
     let left_bp = (seq_left_idx + 1) as u64;
     let right_bp = (seq_right_idx + 1) as u64;
-    let (subj_start, subj_end) = if orient {
-        (
-            subj_seed_start.wrapping_sub(right_bp),
-            subj_seed_end.wrapping_add(left_bp),
-        )
-    } else {
-        (
-            subj_seed_start.wrapping_sub(left_bp),
-            subj_seed_end.wrapping_add(right_bp),
-        )
-    };
+    let (lo_bp, hi_bp) = if orient { (right_bp, left_bp) } else { (left_bp, right_bp) };
+    let subj = Span::new(subj_seed_start - lo_bp, subj_seed_end + 1 + hi_bp)
+        .expect("the seed keeps start below end");
+    let query = Span::new(
+        (query_seed_start - (cons_left_idx + 1) as usize) as u64,
+        (query_seed_end + 1 + (cons_right_idx + 1) as usize) as u64,
+    )
+    .expect("the seed keeps start below end");
 
     let mut combined_score = left_score + right_score;
     if use_complexity_adjust {
         let mut comp = [0i64; 4];
-        for &base in &lib.sequence[subj_start as usize..=subj_end as usize] {
+        for &base in &lib.sequence[subj.range_usize()] {
             // Masked (>3) and N bases are excluded from the composition.
             if base <= 3 {
                 comp[base as usize] += 1;
@@ -179,10 +176,8 @@ pub fn cons_seed_extend(
 
     GlocalResult {
         score: combined_score,
-        query_start: query_seed_start as i32 - (cons_left_idx + 1),
-        query_end: query_seed_end as i32 + (cons_right_idx + 1),
-        subj_start,
-        subj_end,
+        query,
+        subj,
     }
 }
 
@@ -284,10 +279,10 @@ mod tests {
             r,
             GlocalResult {
                 score: 1573,
-                query_start: 17,
-                query_end: 214,
-                subj_start: 67,
-                subj_end: 267
+                // C golden values are 0-based inclusive: query 17..=214,
+                // subject 67..=267.
+                query: Span::new(17, 215).unwrap(),
+                subj: Span::new(67, 268).unwrap(),
             }
         );
 
@@ -299,10 +294,8 @@ mod tests {
             r,
             GlocalResult {
                 score: 743,
-                query_start: 0,
-                query_end: 99,
-                subj_start: 400,
-                subj_end: 498
+                query: Span::new(0, 100).unwrap(),
+                subj: Span::new(400, 499).unwrap(),
             }
         );
 
@@ -314,10 +307,8 @@ mod tests {
             r,
             GlocalResult {
                 score: 1462,
-                query_start: 0,
-                query_end: 212,
-                subj_start: 803,
-                subj_end: 1014
+                query: Span::new(0, 213).unwrap(),
+                subj: Span::new(803, 1015).unwrap(),
             }
         );
     }
@@ -346,8 +337,8 @@ mod tests {
         );
         // Nothing scores above 0 to the right, and the drop check must fire
         // long before the query is exhausted, leaving the zero-length result.
-        assert_eq!(strict.query_end, 9);
-        assert_eq!(strict.subj_end, 9);
+        assert_eq!(strict.query.end(), 10);
+        assert_eq!(strict.subj.end(), 10);
         assert_eq!(strict.score, 0);
     }
 }

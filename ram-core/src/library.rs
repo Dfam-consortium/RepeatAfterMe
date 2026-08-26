@@ -35,6 +35,8 @@
 
 use std::path::Path;
 
+use aln_coord::Span;
+
 use crate::alphabet::SYM_N;
 use crate::twobit::TwoBitReader;
 
@@ -52,10 +54,13 @@ pub enum CoreBoundFlag {
 
 /// A core aligned region from which extension is performed.
 ///
-/// `left_seq_pos`/`right_seq_pos` are indices into the in-memory
-/// `SequenceLibrary::sequence` array (0-based, fully closed) in the *logical*
-/// left/right order of the core MSA: for a reverse-strand core the left
-/// position is numerically larger than the right.
+/// The engine walks single positions, not ranges, so this struct holds
+/// positions: `left_seq_pos`/`right_seq_pos` are the indices of the core's
+/// first and last bases in the in-memory `SequenceLibrary::sequence` array,
+/// in the *logical* left/right order of the core MSA. For a reverse-strand
+/// core the left position is numerically larger than the right. Read the
+/// core as a range through [`CoreAlignment::core_span`] and
+/// [`CoreAlignment::extended_span`] rather than adding 1 by hand.
 #[derive(Debug, Clone)]
 pub struct CoreAlignment {
     pub seq_idx: usize,
@@ -63,9 +68,10 @@ pub struct CoreAlignment {
     pub right_seq_pos: u64,
     pub left_extendable: bool,
     pub right_extendable: bool,
-    /// In-memory lower bound available to this core during extension.
+    /// Lowest in-memory position this core may extend into.
     pub lower_seq_bound: u64,
-    /// In-memory upper bound (inclusive) available during extension.
+    /// Highest in-memory position this core may extend into. A position,
+    /// not a range end, so it is the last usable index.
     pub upper_seq_bound: u64,
     pub lower_seq_bound_flag: CoreBoundFlag,
     pub upper_seq_bound_flag: CoreBoundFlag,
@@ -77,6 +83,38 @@ pub struct CoreAlignment {
     pub score: i32,
     /// True = reverse strand.
     pub orient: bool,
+}
+
+impl CoreAlignment {
+    /// The core's bases in the library buffer, ascending regardless of
+    /// strand.
+    pub fn core_span(&self) -> Span {
+        let lo = self.left_seq_pos.min(self.right_seq_pos);
+        let hi = self.left_seq_pos.max(self.right_seq_pos);
+        Span::new(lo, hi + 1).expect("lo <= hi")
+    }
+
+    /// The core plus whatever the engine extended on each side, in the
+    /// library buffer. The extension lengths are strand-relative; a
+    /// reverse-strand core's left extension grows the upper end.
+    ///
+    /// The engine keeps the extension inside `lower_seq_bound`, so the start
+    /// cannot go below 0; the subtraction saturates rather than wrapping so
+    /// that a negative extension length (which the engine never produces)
+    /// cannot silently become a huge coordinate.
+    pub fn extended_span(&self) -> Span {
+        let core = self.core_span();
+        let (lo_ext, hi_ext) = if self.orient {
+            (self.right_extension_len, self.left_extension_len)
+        } else {
+            (self.left_extension_len, self.right_extension_len)
+        };
+        Span::new(
+            core.start().saturating_sub(lo_ext.max(0) as u64),
+            core.end() + hi_ext.max(0) as u64,
+        )
+        .expect("core.start <= core.end")
+    }
 }
 
 /// Concatenated encoded subsequences plus per-subsequence metadata.
@@ -105,6 +143,13 @@ impl SequenceLibrary {
             0
         }
     }
+
+    /// Translate a span in the library buffer, lying within subsequence
+    /// `seq_idx`, to the source sequence that subsequence was cut from.
+    pub fn to_source(&self, seq_idx: usize, span: Span) -> Span {
+        let shift = |p: u64| p - self.lower_bound(seq_idx) + self.offsets[seq_idx];
+        Span::new(shift(span.start()), shift(span.end())).expect("shifting both ends keeps order")
+    }
 }
 
 /// One parsed line of the ranges TSV. Flag fields keep their raw `atoi`
@@ -112,8 +157,9 @@ impl SequenceLibrary {
 #[derive(Debug, Clone)]
 pub struct RangeRecord {
     pub name: String,
-    pub start: i64,
-    pub end: i64,
+    /// The core on the source sequence. The file is 0-based half-open, so
+    /// this is the columns as written.
+    pub span: Span,
     pub left_flag: i32,
     pub right_flag: i32,
     /// True = reverse strand.
@@ -187,10 +233,20 @@ pub fn read_ranges(path: &Path) -> crate::Result<Vec<RangeRecord>> {
                 "Error: ranges file does not appear to be in the correct format!".to_string(),
             ));
         }
+        let (start, end) = (strtol_like(fields[1]), strtol_like(fields[2]));
+        let span = u64::try_from(start)
+            .ok()
+            .zip(u64::try_from(end).ok())
+            .and_then(|(s, e)| Span::new(s, e).ok())
+            .ok_or_else(|| {
+                crate::Error::Format(format!(
+                    "Error: range {start}-{end} for {} is not a 0-based half-open interval",
+                    fields[0]
+                ))
+            })?;
         out.push(RangeRecord {
             name: fields[0].to_string(),
-            start: strtol_like(fields[1]),
-            end: strtol_like(fields[2]),
+            span,
             left_flag: atoi_like(fields[3]),
             right_flag: atoi_like(fields[4]),
             minus: fields[5].starts_with('-'),
@@ -216,8 +272,8 @@ pub fn load_sequence_subset_minimal(
     sorted.sort_by(|a, b| {
         a.name
             .cmp(&b.name)
-            .then(a.start.cmp(&b.start))
-            .then(b.end.cmp(&a.end))
+            .then(a.span.start().cmp(&b.span.start()))
+            .then(b.span.end().cmp(&a.span.end()))
     });
 
     let mut lib = SequenceLibrary {
@@ -233,23 +289,26 @@ pub fn load_sequence_subset_minimal(
             crate::Error::Format(format!("chromosome {:?} not found in 2bit file", s.name))
         })? as i64;
 
+        // The flank arithmetic below is signed, as in the C.
+        let (s_start, s_end) = (s.span.start() as i64, s.span.end() as i64);
         let mut lower_flank_len: i64 = 0;
-        let mut flanking_start: i64 = s.start;
-        let mut flanking_end: i64 = s.end;
+        let mut flanking_start: i64 = s_start;
+        let mut flanking_end: i64 = s_end;
         let mut lower_bound_flag = CoreBoundFlag::LBoundary;
         let mut upper_bound_flag = CoreBoundFlag::LBoundary;
 
         // Neighboring cores on the same input sequence (in sorted order).
         let prev = if i > 0 && sorted[i - 1].name == s.name {
             let p = sorted[i - 1];
-            let dist = if s.start < p.end {
+            let (p_start, p_end) = (p.span.start() as i64, p.span.end() as i64);
+            let dist = if s_start < p_end {
                 eprintln!(
                     "WARNING: core sequences overlap  {}:{}-{} and previous {}:{}-{}",
-                    s.name, s.start, s.end, p.name, p.start, p.end
+                    s.name, s_start, s_end, p.name, p_start, p_end
                 );
                 0
             } else {
-                s.start - p.end
+                s_start - p_end
             };
             Some((p, dist))
         } else {
@@ -257,14 +316,15 @@ pub fn load_sequence_subset_minimal(
         };
         let next = if i + 1 < sorted.len() && sorted[i + 1].name == s.name {
             let n = sorted[i + 1];
-            let dist = if n.start < s.end {
+            let (n_start, n_end) = (n.span.start() as i64, n.span.end() as i64);
+            let dist = if n_start < s_end {
                 eprintln!(
                     "WARNING: core sequences overlap  {}:{}-{} and next {}:{}-{}",
-                    s.name, s.start, s.end, n.name, n.start, n.end
+                    s.name, s_start, s_end, n.name, n_start, n_end
                 );
                 0
             } else {
-                n.start - s.end
+                n_start - s_end
             };
             Some((n, dist))
         } else {
@@ -284,11 +344,11 @@ pub fn load_sequence_subset_minimal(
                 match next {
                     Some((n, dist)) if dist <= max_flanking_bp => {
                         let flank = if grants_full(n, n.left_flag) { dist } else { dist / 2 };
-                        flanking_end = s.end + flank;
+                        flanking_end = s_end + flank;
                         upper_bound_flag = CoreBoundFlag::CoreBoundary;
                     }
-                    _ if s.end + max_flanking_bp < seq_size => {
-                        flanking_end = s.end + max_flanking_bp;
+                    _ if s_end + max_flanking_bp < seq_size => {
+                        flanking_end = s_end + max_flanking_bp;
                         upper_bound_flag = CoreBoundFlag::LBoundary;
                     }
                     _ => {
@@ -301,18 +361,18 @@ pub fn load_sequence_subset_minimal(
                 match prev {
                     Some((p, dist)) if dist <= max_flanking_bp => {
                         let flank = if grants_full(p, p.right_flag) { dist } else { dist / 2 };
-                        flanking_start = s.start - flank;
+                        flanking_start = s_start - flank;
                         lower_flank_len = flank;
                         lower_bound_flag = CoreBoundFlag::CoreBoundary;
                     }
-                    _ if max_flanking_bp < s.start => {
-                        flanking_start = s.start - max_flanking_bp;
+                    _ if max_flanking_bp < s_start => {
+                        flanking_start = s_start - max_flanking_bp;
                         lower_flank_len = max_flanking_bp;
                         lower_bound_flag = CoreBoundFlag::LBoundary;
                     }
                     _ => {
                         flanking_start = 0;
-                        lower_flank_len = s.start;
+                        lower_flank_len = s_start;
                         lower_bound_flag = CoreBoundFlag::SeqBoundary;
                     }
                 }
@@ -323,18 +383,18 @@ pub fn load_sequence_subset_minimal(
                 match prev {
                     Some((p, dist)) if dist <= max_flanking_bp => {
                         let flank = if grants_full(p, p.left_flag) { dist } else { dist / 2 };
-                        flanking_start = s.start - flank;
+                        flanking_start = s_start - flank;
                         lower_flank_len = flank;
                         lower_bound_flag = CoreBoundFlag::CoreBoundary;
                     }
-                    _ if max_flanking_bp < s.start => {
-                        flanking_start = s.start - max_flanking_bp;
+                    _ if max_flanking_bp < s_start => {
+                        flanking_start = s_start - max_flanking_bp;
                         lower_flank_len = max_flanking_bp;
                         lower_bound_flag = CoreBoundFlag::LBoundary;
                     }
                     _ => {
                         flanking_start = 0;
-                        lower_flank_len = s.start;
+                        lower_flank_len = s_start;
                         lower_bound_flag = CoreBoundFlag::SeqBoundary;
                     }
                 }
@@ -343,11 +403,11 @@ pub fn load_sequence_subset_minimal(
                 match next {
                     Some((n, dist)) if dist <= max_flanking_bp => {
                         let flank = if grants_full(n, n.right_flag) { dist } else { dist / 2 };
-                        flanking_end = s.end + flank;
+                        flanking_end = s_end + flank;
                         upper_bound_flag = CoreBoundFlag::CoreBoundary;
                     }
-                    _ if s.end + max_flanking_bp < seq_size => {
-                        flanking_end = s.end + max_flanking_bp;
+                    _ if s_end + max_flanking_bp < seq_size => {
+                        flanking_end = s_end + max_flanking_bp;
                         upper_bound_flag = CoreBoundFlag::LBoundary;
                     }
                     _ => {
@@ -375,7 +435,7 @@ pub fn load_sequence_subset_minimal(
         lib.boundaries.push(sub_end_excl);
         lib.offsets.push(flanking_start as u64);
 
-        let core_len = (s.end - s.start) as u64;
+        let core_len = s.span.len();
         let (orient, left_seq_pos, right_seq_pos) = if s.minus {
             let right = sub_start + lower_flank_len as u64;
             (true, right + core_len - 1, right)
@@ -458,11 +518,10 @@ mod tests {
         std::fs::write(path, buf).unwrap();
     }
 
-    fn range(name: &str, start: i64, end: i64, l: i32, r: i32, minus: bool) -> RangeRecord {
+    fn range(name: &str, start: u64, end: u64, l: i32, r: i32, minus: bool) -> RangeRecord {
         RangeRecord {
             name: name.to_string(),
-            start,
-            end,
+            span: Span::new(start, end).unwrap(),
             left_flag: l,
             right_flag: r,
             minus,
@@ -524,9 +583,8 @@ mod tests {
 pub struct CoreEdge {
     pub index: usize,
     pub identifier: String,
-    /// Core range in the source sequence, 0-based fully closed.
-    pub start: u64,
-    pub end: u64,
+    /// The core on the source sequence.
+    pub span: Span,
     pub minus: bool,
     pub left_extendable: bool,
     pub right_extendable: bool,
@@ -613,14 +671,10 @@ pub fn core_edges(lib: &SequenceLibrary, cores: &[CoreAlignment]) -> Vec<CoreEdg
             let right_start = c.left_seq_pos as i64 + step * core_len as i64;
             let (rf, rcut) = take(right_start, step);
 
-            // `*_seq_pos` index the concatenated library buffer; the reader
-            // wants coordinates in the source sequence.
-            let to_src = |p: u64| lib.offsets[c.seq_idx] + p.saturating_sub(lower);
             CoreEdge {
                 index: n,
                 identifier: lib.identifiers[c.seq_idx].clone(),
-                start: to_src(c.left_seq_pos.min(c.right_seq_pos)),
-                end: to_src(c.left_seq_pos.max(c.right_seq_pos)),
+                span: lib.to_source(c.seq_idx, c.core_span()),
                 minus: c.orient,
                 left_extendable: c.left_extendable,
                 right_extendable: c.right_extendable,

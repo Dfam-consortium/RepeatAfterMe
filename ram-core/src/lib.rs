@@ -23,6 +23,10 @@
 //!  - [`engine`]    — the banded DP row kernel and the extension driver
 //!  - [`glocal`]    — seed-anchored glocal alignment (`cons_seed_extend`)
 
+/// The coordinate type every range in this crate is stated in: 0-based,
+/// half-open, forward strand.
+pub use aln_coord::Span;
+
 pub mod alphabet;
 pub mod engine;
 pub mod glocal;
