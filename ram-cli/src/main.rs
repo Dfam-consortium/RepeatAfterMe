@@ -39,7 +39,7 @@ mod stk;
 use ram_core::matrix::ScoringSystem;
 use ram_core::twobit::TwoBitReader;
 
-const VERSION: &str = "0.1.0-rust";
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-rust");
 
 /// C `cmd_line_opts` semantics: scan argv for an exact flag match; the value
 /// is the following argument. Unknown arguments are ignored.

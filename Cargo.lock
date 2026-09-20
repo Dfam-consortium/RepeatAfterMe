@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "ram-cli"
-version = "0.1.0"
+version = "0.2.2"
 dependencies = [
  "aln-core",
  "dfam-stk-io",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "ram-core"
-version = "0.1.0"
+version = "0.2.2"
 dependencies = [
  "aln-coord",
  "aln-core",
