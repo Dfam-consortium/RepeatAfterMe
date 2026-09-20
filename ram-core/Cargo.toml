@@ -8,6 +8,6 @@ description = "Fit-preferred banded MSA extension (RAMExtend core) - Rust port"
 [dependencies]
 # The 2bit reader now lives in dfam-lib; this crate contributed the canonical
 # implementation and no longer keeps a copy.
-aln-core = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.2.0" }
-aln-coord = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.2.0" }
+aln-core = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.2.2" }
+aln-coord = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.2.2" }
 rayon = "1.12.0"

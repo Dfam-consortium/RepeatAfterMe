@@ -16,5 +16,5 @@ ram-core = { path = "../ram-core" }
 # dfam-lib's published tag, not a sibling checkout: a path dependency ties
 # this to one machine's layout, and mixing path and git deps for the same
 # crate compiles two incompatible copies of it.
-dfam-stk-io = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.2.0" }
-aln-core = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.2.0" }
+dfam-stk-io = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.2.2" }
+aln-core = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.2.2" }
