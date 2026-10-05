@@ -3,7 +3,8 @@
 #   Top-level build for the Rust implementation. The C sources that produced
 #   releases through V0.0.7 live under c/ and build separately; see `make c`.
 #
-VERSION = 0.1.0
+# Single source of truth for the version is [workspace.package] in Cargo.toml.
+VERSION := $(shell sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
 INSTDIR = /usr/local/RepeatAfterMe-$(VERSION)
 CARGO   = cargo
 
@@ -27,8 +28,10 @@ target/release/ram-extend: $(RUST_SRC)
 install: all
 	mkdir -p $(INSTDIR)
 	cp target/release/ram-extend $(INSTDIR)/ram-extend
-	cp RAMExtend $(INSTDIR)/RAMExtend
+	ln -sf ram-extend $(INSTDIR)/RAMExtend
 	cp README.md $(INSTDIR)
+	mkdir -p $(INSTDIR)/util
+	install -m 755 util/extend-stk.pl $(INSTDIR)/util/extend-stk.pl
 
 # The frozen C tree. Its Makefile is unchanged from V0.0.7.
 c:

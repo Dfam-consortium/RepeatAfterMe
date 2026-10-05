@@ -57,9 +57,14 @@ use Cwd;
 
 my $Version = "0.4-reduced";
 
-# ram-extend is expected beside this script's parent (workspace target),
-# overridable with RAM_EXTEND.
-my $ramExtend = $ENV{'RAM_EXTEND'} || "$FindBin::RealBin/../target/release/ram-extend";
+# ram-extend is looked for in this script's parent directory (an installed
+# release) and then in the workspace build target, overridable with RAM_EXTEND.
+my $ramExtend = $ENV{'RAM_EXTEND'};
+unless ( $ramExtend ) {
+  ($ramExtend) = grep { -x $_ } ( "$FindBin::RealBin/../ram-extend",
+                                  "$FindBin::RealBin/../target/release/ram-extend" );
+  $ramExtend ||= "$FindBin::RealBin/../ram-extend";
+}
 
 my @getopt_args = (
     '-assembly|a=s', '-input|i=s', '-output|o=s',

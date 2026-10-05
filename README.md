@@ -50,7 +50,7 @@ scraped stdout lines byte-for-byte. All twelve comparisons match under
 
 ```bash
 make            # builds the Rust RAMExtend at the top of the tree
-make install    # installs to /usr/local/RepeatAfterMe-<version>
+make install    # installs to /usr/local/RepeatAfterMe-<version> (version from Cargo.toml)
 make c          # builds the frozen C tool under c/
 make test       # unit tests plus the C-vs-Rust differential harness
 ```
@@ -62,7 +62,10 @@ compiler and `make`.
 
 Cargo names the binary `ram-extend`. RepeatModeler probes for `RAMExtend` and
 dfam-tetools runs `RAMExtend -version`, so `make` leaves that name at the top
-of the tree and `make install` installs both. They are the same binary.
+of the tree. `make install` installs `ram-extend` with `RAMExtend` as a
+symlink to it.
+`make install` also copies `util/extend-stk.pl` into `util/` under the install
+directory, where it finds `ram-extend` one level up.
 
 ## RAMExtend
 
