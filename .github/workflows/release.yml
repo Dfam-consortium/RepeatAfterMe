@@ -63,6 +63,13 @@ jobs:
             exit 1
           fi
 
+      # The release description is this version's CHANGELOG.md section, so a
+      # tag without one fails here, before anything is published.
+      - name: Check CHANGELOG has a section for this version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: sh .github/changelog-section.sh "$(make version)" > /dev/null
+
       # `make dist` runs the release build and stages the same versioned
       # hierarchy that `make install` produces, so the published archive and a
       # local install are laid out identically.
@@ -130,11 +137,13 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # The release description is this version's section of CHANGELOG.md.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          sh .github/changelog-section.sh "${GITHUB_REF_NAME#v}" > release-notes.md
           gh release create "${{ github.ref_name }}" \
             --title "RepeatAfterMe ${{ github.ref_name }}" \
-            --generate-notes \
+            --notes-file release-notes.md \
             artifacts/*
