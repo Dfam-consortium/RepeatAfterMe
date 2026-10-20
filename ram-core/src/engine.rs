@@ -851,6 +851,126 @@ mod tests {
         assert!(cores[0].score > 0);
     }
 
+    /// Invariant: a core a few bases from a sequence end never reports an
+    /// extension longer than the sequence it has, in either direction, at
+    /// the pipeline's bandwidth as well as a small one. (The 2026-10-20
+    /// hs1 chr1 overshoot turned out to be in `profile_extend`, not here;
+    /// this pins the fit-preferred kernels to the same contract.)
+    #[test]
+    fn extension_never_exceeds_the_sequence_bound() {
+        let scoring = ScoringSystem::by_name("20p43g").unwrap();
+        for bandwidth in [5i32, 14] {
+            for avail in 0u64..6 {
+                for dir in [Direction::Left, Direction::Right] {
+                    // core = 8 bases; the flank shared by the two driving
+                    // copies is GATTACAGATTACAGATT...; the edge copy has
+                    // only `avail` bases of mismatching sequence there.
+                    let core = "ACGTACGT";
+                    let flank = "GATTACAGATTACAGATTACAGATTACA";
+                    let junk = "CCCCCCCC";
+                    let (seq, edge_core_left) = match dir {
+                        Direction::Left => {
+                            // [junk(avail)][core]  ...  [flank][core] ... [flank][core]
+                            let s = format!("{}{}NNNN{}{}NNNN{}{}", &junk[..avail as usize], core, flank, core, flank, core);
+                            (s, avail)
+                        }
+                        Direction::Right => {
+                            // [core][flank] ... [core][flank] ... [core][junk(avail)]
+                            let s = format!("{}{}NNNN{}{}NNNN{}{}", core, flank, core, flank, core, &junk[..avail as usize]);
+                            (s, (core.len() + flank.len() + 4 + core.len() + flank.len() + 4) as u64)
+                        }
+                    };
+                    let lib = simple_lib(&seq);
+                    let n = lib.sequence.len() as u64;
+                    let mut cores: Vec<CoreAlignment> = Vec::new();
+                    // all three cores, the edge copy first
+                    let mut starts: Vec<u64> = Vec::new();
+                    let bytes = seq.as_bytes();
+                    let mut i = 0usize;
+                    while let Some(k) = seq[i..].find(core) {
+                        starts.push((i + k) as u64);
+                        i += k + 1;
+                    }
+                    assert_eq!(starts.len(), 3, "{seq}");
+                    let _ = bytes;
+                    starts.sort_by_key(|&s| if s == edge_core_left { 0 } else { 1 });
+                    for &s in &starts {
+                        cores.push(core_at(s, s + core.len() as u64 - 1, n - 1));
+                    }
+                    let params = ExtendParams { bandwidth, cap_penalty: -90, min_improvement: 9, l_max: 60, when_to_stop: 100 };
+                    let mut arena = ScoreArena::new(cores.len(), params.bandwidth);
+                    let mut master = vec![99u8; (2 * params.l_max + 1 + 1) as usize];
+                    let res = extend_alignment(dir, &mut cores, &mut arena, &lib, &mut master, &params, &scoring);
+                    assert!(res.bp > 0, "no extension (bandwidth {bandwidth}, avail {avail}, {dir:?})");
+                    for c in &cores {
+                        let room = match dir {
+                            Direction::Left => c.left_seq_pos - c.lower_seq_bound,
+                            Direction::Right => c.upper_seq_bound - c.right_seq_pos,
+                        };
+                        let ext = match dir {
+                            Direction::Left => c.left_extension_len,
+                            Direction::Right => c.right_extension_len,
+                        } as u64;
+                        assert!(
+                            ext <= room,
+                            "core at {} extended {} {:?} with {} bases of room (bandwidth {}, avail {})",
+                            c.left_seq_pos, ext, dir, room, bandwidth, avail
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Invariant on a tandem repeat at a sequence start (hs1 chr1's
+    /// telomere, cloud seeds at 18 forward and 24 reverse): in a tandem the
+    /// band has equally good cells at every period offset, so the best cell
+    /// wanders; the reported extension still may not pass the sequence
+    /// start. Forward and reverse cores, both directions, bandwidth 14.
+    #[test]
+    fn telomeric_cores_at_the_sequence_start_stay_in_bounds() {
+        let unit = "CCCTAA";
+        let mut seq = String::new();
+        while seq.len() < 600 {
+            seq.push_str(unit);
+        }
+        seq.replace_range(40..46, "CCCTAG"); // a blemish so the phases are not all identical
+        let lib = simple_lib(&seq);
+        let n = lib.sequence.len() as u64;
+        let scoring = ScoringSystem::by_name("20p43g").unwrap();
+        for dir in [Direction::Left, Direction::Right] {
+            let mut cores: Vec<CoreAlignment> = Vec::new();
+            // forward core at 18, reverse core at 24, then forward cores every 60 bp
+            let mut c = core_at(18, 31, n - 1);
+            cores.push(c);
+            c = core_at(24, 37, n - 1);
+            c.orient = true;
+            cores.push(c);
+            for s in (90..500).step_by(60) {
+                cores.push(core_at(s, s + 13, n - 1));
+            }
+            let params = ExtendParams { bandwidth: 14, cap_penalty: -90, min_improvement: 9, l_max: 200, when_to_stop: 100 };
+            let mut arena = ScoreArena::new(cores.len(), params.bandwidth);
+            let mut master = vec![99u8; (2 * params.l_max + 1 + 1) as usize];
+            let res = extend_alignment(dir, &mut cores, &mut arena, &lib, &mut master, &params, &scoring);
+            assert!(res.bp > 0, "no extension ({dir:?})");
+            for c in &cores {
+                // genome room on the side the extension runs into
+                let (room, ext) = match (dir, c.orient) {
+                    (Direction::Left, false) => (c.left_seq_pos - c.lower_seq_bound, c.left_extension_len),
+                    (Direction::Left, true) => (c.upper_seq_bound - c.left_seq_pos, c.left_extension_len),
+                    (Direction::Right, false) => (c.upper_seq_bound - c.right_seq_pos, c.right_extension_len),
+                    (Direction::Right, true) => (c.right_seq_pos - c.lower_seq_bound, c.right_extension_len),
+                };
+                assert!(
+                    ext as u64 <= room,
+                    "core {}..{} orient {} extended {} {:?} with {} bases of room",
+                    c.left_seq_pos, c.right_seq_pos, c.orient, ext, dir, room
+                );
+            }
+        }
+    }
+
     /// A reverse-orient core must extend using complemented bases.
     #[test]
     fn reverse_orient_core_reads_complemented_flank() {

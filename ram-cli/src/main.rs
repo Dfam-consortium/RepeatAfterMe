@@ -39,7 +39,7 @@ mod stk;
 use ram_core::matrix::ScoringSystem;
 use ram_core::twobit::TwoBitReader;
 
-const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-rust");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// C `cmd_line_opts` semantics: scan argv for an exact flag match; the value
 /// is the following argument. Unknown arguments are ignored.
@@ -78,7 +78,9 @@ fn usage() -> ExitCode {
          -match -mismatch -gap -bandwidth -version -v[v[v[v]]]\n\n\
          Port-specific:\n\
          -ccompat   # reproduce three C bugs byte-for-byte (neighbor-gap\n\
-                    # midpointing, right-extension wrap phase, TSV anchor_range)\n"
+                    # midpointing, right-extension wrap phase, TSV anchor_range)\n\
+         -threads <num>  # worker threads for the extension DP\n\
+                         # (default 1; 0 = all logical CPUs)\n"
     );
     ExitCode::from(1)
 }
@@ -122,8 +124,10 @@ fn main() -> ExitCode {
     let when_to_stop = args.get_int("-stopafter").unwrap_or(100) as i32;
 
     // Unlike the C tool (which parses -threads but never uses it), this port
-    // parallelizes the per-row DP across cores. 0 = all logical CPUs.
-    let threads = args.get_int("-threads").unwrap_or(0).max(0) as usize;
+    // can parallelize the per-row DP across cores. Single-threaded by
+    // default like C: RepeatModeler already runs one Refiner (and so one
+    // RAMExtend) per thread. 0 = all logical CPUs.
+    let threads = args.get_int("-threads").unwrap_or(1).max(0) as usize;
     ram_core::engine::set_threads(threads);
 
     let c_compat = args.get_bool("-ccompat");

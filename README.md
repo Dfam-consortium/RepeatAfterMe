@@ -55,10 +55,25 @@ make c          # builds the frozen C tool under c/
 make test       # unit tests plus the C-vs-Rust differential harness
 ```
 
-Building the Rust tool needs a Rust toolchain (built and tested against 1.86;
-no minimum is declared) and network access on the first build, since two
-dependencies resolve from git tags. Building the C tool needs a GNU11 C
-compiler and `make`.
+Building the Rust tool needs a Rust toolchain, 1.86 or newer (the version it
+is built and tested against). The usual way to get one is
+[rustup](https://rustup.rs):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+The first build also needs network access, since the dfam-lib dependencies
+resolve from git tags. Building the C tool needs a GNU11 C compiler and
+`make`; `make test` additionally needs `python3` and builds the C tool for
+the comparison.
+
+`make install` writes to `/usr/local`, which usually needs root. To install
+elsewhere, override the directory:
+
+```bash
+make install INSTDIR=$HOME/software/RepeatAfterMe-1.0.0
+```
 
 Cargo names the binary `ram-extend`. RepeatModeler probes for `RAMExtend` and
 dfam-tetools runs `RAMExtend -version`, so `make` leaves that name at the top
@@ -66,6 +81,26 @@ of the tree. `make install` installs `ram-extend` with `RAMExtend` as a
 symlink to it.
 `make install` also copies `util/extend-stk.pl` into `util/` under the install
 directory, where it finds `ram-extend` one level up.
+
+### Using it with RepeatModeler
+
+RepeatModeler looks for `RAMExtend` directly inside the directory it is
+given. Point its `configure` at the install directory:
+
+```bash
+cd /path/to/RepeatModeler
+perl ./configure -repeatafterme_dir /usr/local/RepeatAfterMe-1.0.0
+```
+
+or make RepeatModeler's default location a symlink to it:
+
+```bash
+ln -s /usr/local/RepeatAfterMe-1.0.0 /usr/local/RepeatAfterMe
+```
+
+An unpacked source tree also works after a bare `make`, since that leaves
+`RAMExtend` at the top of the tree. Running without `-ccompat`, which is what
+RepeatModeler does, applies the three fixes above.
 
 ## RAMExtend
 
@@ -95,6 +130,12 @@ matters for core-alignment fragments that do not reach the core edges.
 
 Run it with no arguments for the option list. [`c/README.md`](c/README.md)
 documents every option in full.
+
+The Rust tool runs single-threaded by default, like the C tool, because
+RepeatModeler already runs one `RAMExtend` per thread it was given.
+`-threads N` uses N worker threads, and `-threads 0` uses all logical CPUs.
+Extra threads only help with large alignments (64 or more ranges); on the
+families RepeatModeler produces they mostly add overhead.
 
 ### Stockholm input
 

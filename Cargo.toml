@@ -3,9 +3,14 @@ members = ["ram-core", "ram-cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.3"
+version = "1.0.0"
 edition = "2021"
 license = "CC0-1.0"
+
+[workspace.dependencies]
+aln-core = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.2.4" }
+aln-coord = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.2.4" }
+dfam-stk-io = { git = "https://github.com/Dfam-consortium/dfam-lib", tag = "0.2.4" }
 
 [profile.release]
 opt-level = 3
