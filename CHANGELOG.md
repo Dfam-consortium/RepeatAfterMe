@@ -11,8 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Neighbor-gap handling: when two ranges sit next to each other on the same 
   strand, the previous version was meant to split the gap between them at 
   the midpoint. That test compared char* pointers and could never be true, 
-  so it never ran.  This version gives the whole gap to whichever copy 
-  extends into it first, and limits the neighbor to where that copy stopped. 
+  so it never ran.  Extension always runs in two fixed passes, right then 
+  left, so of two same-strand neighbors only one can grow into the gap 
+  between them during the right pass.  This version lets that copy use the 
+  whole gap, and the neighbor's left extension then stops where it ended. 
+  The result is deterministic. 
   Extensions can now run longer than before (e.g. ce10-fam2 under Refiner 
   parameters extends 193 bp left where the previous version stopped at 131).
 - Right-extension line wrapping in -cons: The previous version wrapped the 
@@ -30,6 +33,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - When neighboring copies on the minus strand extend toward each other, the 
   second can reuse 2 bp the first already took.  Refiner merges overlapping 
   ranges, so in tandem arrays seeded on the minus strand several copies can 
-  be merged into one sequence.  See TODO.md.
+  be merged into one sequence.  
 
 
