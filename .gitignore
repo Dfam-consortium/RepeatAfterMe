@@ -29,3 +29,7 @@ perf.data*
 
 # Rust binary copied to the top of the tree under its C name
 /RAMExtend
+
+# Release staging produced by `make dist`
+/stage/
+/RepeatAfterMe-*.tar.gz

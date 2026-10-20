@@ -1,0 +1,140 @@
+name: Release
+
+on:
+  push:
+    tags:
+      # Releases are tagged bare "X.Y.Z" (as in rmblast); "vX.Y.Z" is accepted
+      # too, and the leading "v" is stripped when deriving VERSION. The older
+      # RepeatAfterMe_VX.Y.Z tags predate this workflow and do not trigger it.
+      - '[0-9]+.[0-9]+.[0-9]+*'
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  # Manual trigger for a build-only smoke test: the archives are attached to the
+  # workflow run as artifacts, and the release job is skipped (it is tag-gated).
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-apple-darwin
+            os: macos-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        run: rustup update stable
+
+      # Each runner builds natively for its own host, so no --target is passed
+      # and `make` finds the binary where it expects it (target/release/).
+      # Guard against building the wrong thing on the wrong runner.
+      - name: Verify host triple matches the matrix target
+        shell: bash
+        run: |
+          HOST="$(rustc -vV | sed -n 's/^host: //p')"
+          if [ "${HOST}" != "${{ matrix.target }}" ]; then
+            echo "runner host triple ${HOST} != matrix target ${{ matrix.target }}" >&2
+            exit 1
+          fi
+
+      # The version of record lives in the root Cargo.toml ([workspace.package],
+      # inherited by every crate) and is what the Makefile stamps into the
+      # package directory name. A tag that disagrees with it would publish an
+      # archive whose name contradicts its contents.
+      - name: Check tag against Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          MAKE_VERSION="$(make version)"
+          if [ "${TAG_VERSION}" != "${MAKE_VERSION}" ]; then
+            echo "tag ${GITHUB_REF_NAME} implies version ${TAG_VERSION}," >&2
+            echo "but Cargo.toml [workspace.package] says ${MAKE_VERSION}." >&2
+            echo "Bump Cargo.toml and re-tag, or tag the right commit." >&2
+            exit 1
+          fi
+
+      # `make dist` runs the release build and stages the same versioned
+      # hierarchy that `make install` produces, so the published archive and a
+      # local install are laid out identically.
+      # COPYFILE_DISABLE keeps macOS tar from injecting ._ AppleDouble entries.
+      - name: Build and package
+        shell: bash
+        env:
+          COPYFILE_DISABLE: '1'
+        run: |
+          make dist PREFIX=/staging DESTDIR="${PWD}/stage"
+          VERSION="$(make version)"
+          ARCHIVE="RepeatAfterMe-${VERSION}-${{ matrix.target }}.tar.gz"
+          mv "RepeatAfterMe-${VERSION}.tar.gz" "${ARCHIVE}"
+          echo "ARCHIVE=${ARCHIVE}" >> "${GITHUB_ENV}"
+
+      # Checks the packaged tree the way its consumers use it: both binary
+      # names report the version, RepeatModeler's version probe (RepModelConfig.pm
+      # runs `RAMExtend -h 2>&1` and matches /Version\s+(\d+\.\d+\.\d+)/) reads
+      # the right number, and an extension of the bundled test case gives the
+      # known result.
+      - name: Smoke-test the packaged binaries
+        shell: bash
+        run: |
+          VERSION="$(make version)"
+          PKG="stage/staging/RepeatAfterMe-${VERSION}"
+          for prog in ram-extend RAMExtend; do
+            OUT="$("${PKG}/${prog}" -version)"
+            echo "${OUT}"
+            if [ "${OUT}" != "RAMExtend Version ${VERSION}" ]; then
+              echo "${prog} reports '${OUT}', expected 'RAMExtend Version ${VERSION}'" >&2
+              exit 1
+            fi
+          done
+          PROBED="$("${PKG}/RAMExtend" -h 2>&1 | perl -0ne 'print $1 if /Version\s+(\d+\.\d+\.\d+)/' || true)"
+          if [ "${PROBED}" != "${VERSION%%-*}" ]; then
+            echo "RepeatModeler's version probe reads '${PROBED}', expected '${VERSION%%-*}'" >&2
+            exit 1
+          fi
+          "${PKG}/RAMExtend" -twobit c/test/extension-test2.2bit \
+              -ranges c/test/extension-test2.tsv -cons smoke-cons.fa > smoke.log
+          EXT="$(grep -E '^Extended (right|left)' smoke.log)"
+          echo "${EXT}"
+          EXPECTED="$(printf 'Extended right: 177 bp\nExtended left : 131 bp')"
+          if [ "${EXT}" != "${EXPECTED}" ] || [ ! -s smoke-cons.fa ]; then
+            echo "extension-test2 did not give the known result" >&2
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "RepeatAfterMe ${{ github.ref_name }}" \
+            --generate-notes \
+            artifacts/*

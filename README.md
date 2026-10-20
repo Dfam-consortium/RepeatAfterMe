@@ -48,11 +48,19 @@ scraped stdout lines byte-for-byte. All twelve comparisons match under
 
 ## Building
 
+Prebuilt archives for Linux x86_64 and macOS Apple Silicon are attached to
+each [GitHub Release](https://github.com/Dfam-consortium/RepeatAfterMe/releases).
+Each unpacks to a ready-to-use `RepeatAfterMe-<version>/` directory laid out
+exactly as `make install` produces it. To build from source:
+
 ```bash
-make            # builds the Rust RAMExtend at the top of the tree
-make install    # installs to /usr/local/RepeatAfterMe-<version> (version from Cargo.toml)
-make c          # builds the frozen C tool under c/
-make test       # unit tests plus the C-vs-Rust differential harness
+make                       # builds the Rust RAMExtend at the top of the tree
+make install               # installs to /usr/local/RepeatAfterMe-<version> (version from Cargo.toml)
+make install PREFIX=/opt   # installs to /opt/RepeatAfterMe-<version>
+make dist                  # also writes RepeatAfterMe-<version>.tar.gz of the installed tree
+make version               # prints the version
+make c                     # builds the frozen C tool under c/
+make test                  # unit tests plus the C-vs-Rust differential harness
 ```
 
 Building the Rust tool needs a Rust toolchain, 1.86 or newer (the version it
@@ -69,10 +77,11 @@ resolve from git tags. Building the C tool needs a GNU11 C compiler and
 the comparison.
 
 `make install` writes to `/usr/local`, which usually needs root. To install
-elsewhere, override the directory:
+elsewhere, set `PREFIX`, or set `INSTDIR` to name the directory outright:
 
 ```bash
-make install INSTDIR=$HOME/software/RepeatAfterMe-1.0.0
+make install PREFIX=$HOME/software    # -> $HOME/software/RepeatAfterMe-<version>
+make install INSTDIR=$HOME/software/ram
 ```
 
 Cargo names the binary `ram-extend`. RepeatModeler probes for `RAMExtend` and
