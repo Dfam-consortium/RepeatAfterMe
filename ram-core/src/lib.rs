@@ -32,6 +32,7 @@ pub mod engine;
 pub mod glocal;
 pub mod library;
 pub mod matrix;
+pub mod profile_extend;
 pub mod twobit;
 
 use std::fmt;
