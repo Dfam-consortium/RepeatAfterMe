@@ -3,6 +3,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## 1.0.1 - 2026-11-4
+### Breaking Changes
+- None
+### Added
+- Bumped to dfam-lib 0.2.5
+### Fixed
+- None
+### Removed
+- None
+### Known Issues
+- None
+
 ## 1.0.0 - 2026-10-20
 ### Breaking Changes
 - None
