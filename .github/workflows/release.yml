@@ -63,12 +63,17 @@ jobs:
             exit 1
           fi
 
-      # The release description is this version's CHANGELOG.md section, so a
-      # tag without one fails here, before anything is published.
+      # The release description is this version's CHANGELOG.md section. A tag
+      # without one is flagged here, early, but does not fail the build: the
+      # release job falls back to a note pointing at CHANGELOG.md.
       - name: Check CHANGELOG has a section for this version
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
-        run: sh .github/changelog-section.sh "$(make version)" > /dev/null
+        run: |
+          VERSION="$(make version)"
+          if ! sh .github/changelog-section.sh "${VERSION}" > /dev/null; then
+            echo "::warning::No CHANGELOG.md section for ${VERSION}; the release will point readers at CHANGELOG.md instead."
+          fi
 
       # `make dist` runs the release build and stages the same versioned
       # hierarchy that `make install` produces, so the published archive and a
@@ -137,12 +142,19 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      # The release description is this version's section of CHANGELOG.md.
+      # The release description is this version's section of CHANGELOG.md, or
+      # a short note pointing at CHANGELOG.md if that section is missing or the
+      # helper script can't be run.
       - name: Create GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sh .github/changelog-section.sh "${GITHUB_REF_NAME#v}" > release-notes.md
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! sh .github/changelog-section.sh "${VERSION}" > release-notes.md; then
+            echo "::warning::No CHANGELOG.md section for ${VERSION}; using the default release note."
+            echo "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md) for the changes in this release." > release-notes.md
+          fi
           gh release create "${{ github.ref_name }}" \
             --title "RepeatAfterMe ${{ github.ref_name }}" \
             --notes-file release-notes.md \
